@@ -1,0 +1,70 @@
+{
+  "random": {
+    "A*": {
+      "success_rate": 1.0,
+      "avg_steps": 22.5,
+      "std_steps": 7.158910531638177,
+      "avg_computation_time": 0.0011302709579467773,
+      "avg_path_length": 19.0
+    },
+    "PPO": {
+      "success_rate": 0.4,
+      "avg_steps": 81.1,
+      "std_steps": 47.725150602172015,
+      "avg_reward": 208.3259414713738,
+      "std_reward": 45.163757214822894,
+      "training_time": 47.35325884819031
+    }
+  },
+  "grid": {
+    "A*": {
+      "success_rate": 0.7,
+      "avg_steps": 23.285714285714285,
+      "std_steps": 3.0101867865293537,
+      "avg_computation_time": 0.0008996248245239258,
+      "avg_path_length": 17.8
+    },
+    "PPO": {
+      "success_rate": 0.0,
+      "avg_steps": 120.0,
+      "std_steps": 0.0,
+      "avg_reward": -571.5911060005701,
+      "std_reward": 653.7448047619826,
+      "training_time": 51.66611409187317
+    }
+  },
+  "maze": {
+    "A*": {
+      "success_rate": 0,
+      "avg_steps": 0,
+      "std_steps": 0,
+      "avg_computation_time": 0,
+      "avg_path_length": 0
+    },
+    "PPO": {
+      "success_rate": 0.0,
+      "avg_steps": 120.0,
+      "std_steps": 0.0,
+      "avg_reward": -1186.7811086493311,
+      "std_reward": 32.39626298267118,
+      "training_time": 72.6147620677948
+    }
+  },
+  "spiral": {
+    "A*": {
+      "success_rate": 0.7,
+      "avg_steps": 53.714285714285715,
+      "std_steps": 25.610903290335912,
+      "avg_computation_time": 0.0034188747406005858,
+      "avg_path_length": 35.7
+    },
+    "PPO": {
+      "success_rate": 0.0,
+      "avg_steps": 120.0,
+      "std_steps": 0.0,
+      "avg_reward": -526.7973820011993,
+      "std_reward": 581.6419459739045,
+      "training_time": 81.03293108940125
+    }
+  }
+}
