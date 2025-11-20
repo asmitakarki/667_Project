@@ -416,11 +416,11 @@ if __name__ == "__main__":
             print(f"Step {i}: Distance to goal = {info['distance_to_goal']:.2f}")
         
         if terminated:
-            print(f"\n✓ Goal reached in {info['step_count']} steps!")
+            print(f"\nâœ“ Goal reached in {info['step_count']} steps!")
             obs, info = env.reset()
         
         if truncated:
-            print(f"\n✗ Episode truncated at {info['step_count']} steps")
+            print(f"\nâœ— Episode truncated at {info['step_count']} steps")
             obs, info = env.reset()
     
     env.close()

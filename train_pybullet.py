@@ -3,11 +3,12 @@ Train RL agents on PyBullet 3D environment
 """
 
 from stable_baselines3 import PPO, SAC, TD3
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 from pybullet_pathfinding_env import PyBulletPathfindingEnv
 import numpy as np
+import os
 
 def make_env(grid_size=20, map_type='random', rank=0, **map_kwargs):
     """Create environment"""
@@ -35,6 +36,11 @@ def train_pybullet(algorithm='PPO', map_type='random', timesteps=200000):
     print(f"Training {algorithm} on PyBullet {map_type} environment")
     print("="*60 + "\n")
     
+    # Create directories
+    os.makedirs('models', exist_ok=True)
+    os.makedirs('logs/pybullet', exist_ok=True)
+    os.makedirs('checkpoints/pybullet', exist_ok=True)
+    
     # Create vectorized environment
     n_envs = 4  # Parallel environments for faster training
     env = DummyVecEnv([
@@ -43,7 +49,7 @@ def train_pybullet(algorithm='PPO', map_type='random', timesteps=200000):
     ])
     
     # Eval environment
-    eval_env = DummyVecEnv([make_env(grid_size=20, map_type=map_type)])
+    eval_env = DummyVecEnv([make_env(grid_size=20, map_type=map_type, num_obstacles=5)])
     
     # Callbacks
     eval_callback = EvalCallback(
@@ -52,13 +58,15 @@ def train_pybullet(algorithm='PPO', map_type='random', timesteps=200000):
         log_path='./logs/pybullet/',
         eval_freq=5000,
         deterministic=True,
-        render=False
+        render=False,
+        verbose=1
     )
     
     checkpoint_callback = CheckpointCallback(
         save_freq=10000,
         save_path='./checkpoints/pybullet/',
-        name_prefix=f'{algorithm.lower()}_{map_type}'
+        name_prefix=f'{algorithm.lower()}_{map_type}',
+        verbose=1
     )
     
     # Create model
@@ -109,6 +117,7 @@ def train_pybullet(algorithm='PPO', map_type='random', timesteps=200000):
     
     # Train
     print(f"\nStarting training for {timesteps} timesteps...")
+    print(f"Using {n_envs} parallel environments")
     print("This will take a while with PyBullet physics...\n")
     
     model.learn(
@@ -133,11 +142,18 @@ def evaluate_pybullet(model_path, map_type='random', episodes=5):
     # Load model
     try:
         model = PPO.load(model_path)
+        print("Loaded PPO model")
     except:
         try:
             model = SAC.load(model_path)
+            print("Loaded SAC model")
         except:
-            model = TD3.load(model_path)
+            try:
+                model = TD3.load(model_path)
+                print("Loaded TD3 model")
+            except Exception as e:
+                print(f"Error loading model: {e}")
+                return
     
     # Create environment with rendering
     env = PyBulletPathfindingEnv(
@@ -149,10 +165,12 @@ def evaluate_pybullet(model_path, map_type='random', episodes=5):
     
     successes = 0
     episode_lengths = []
+    episode_rewards = []
     
     for ep in range(episodes):
         obs, info = env.reset()
         steps = 0
+        episode_reward = 0
         
         print(f"\nEpisode {ep + 1}:")
         
@@ -162,6 +180,7 @@ def evaluate_pybullet(model_path, map_type='random', episodes=5):
                 action = int(action.item()) if action.size == 1 else action
             
             obs, reward, terminated, truncated, info = env.step(action)
+            episode_reward += reward
             steps += 1
             
             if steps % 50 == 0:
@@ -169,13 +188,15 @@ def evaluate_pybullet(model_path, map_type='random', episodes=5):
             
             if terminated:
                 successes += 1
-                print(f"  ✓ SUCCESS in {steps} steps!")
+                print(f"  ✓ SUCCESS in {steps} steps! Reward: {episode_reward:.1f}")
                 episode_lengths.append(steps)
+                episode_rewards.append(episode_reward)
                 break
             
             if truncated:
-                print(f"  ✗ TIMEOUT after {steps} steps")
+                print(f"  ✗ TIMEOUT after {steps} steps. Reward: {episode_reward:.1f}")
                 episode_lengths.append(steps)
+                episode_rewards.append(episode_reward)
                 break
         
         # Small pause between episodes
@@ -188,7 +209,8 @@ def evaluate_pybullet(model_path, map_type='random', episodes=5):
     print("Results:")
     print(f"  Success rate: {successes}/{episodes} ({100*successes/episodes:.1f}%)")
     if episode_lengths:
-        print(f"  Average steps: {np.mean(episode_lengths):.1f}")
+        print(f"  Average steps: {np.mean(episode_lengths):.1f} ± {np.std(episode_lengths):.1f}")
+        print(f"  Average reward: {np.mean(episode_rewards):.1f} ± {np.std(episode_rewards):.1f}")
     print("="*60)
 
 def quick_demo():
@@ -206,15 +228,21 @@ def quick_demo():
     
     obs, info = env.reset()
     
-    print("Watch the robot move randomly in PyBullet...")
-    print("Close the window when done.\n")
+    print("Watch the robot (blue sphere) move randomly in PyBullet...")
+    print("It's trying to reach the green goal while avoiding gray obstacles.")
+    print("The red cylinder shows which direction the robot is facing.\n")
+    print("Close the PyBullet window when done.\n")
     
-    for i in range(200):
+    for i in range(300):
         action = env.action_space.sample()
         obs, reward, terminated, truncated, info = env.step(action)
         
-        if terminated or truncated:
-            print(f"Episode finished at step {i}")
+        if terminated:
+            print(f"\n✓ Goal reached at step {i}!")
+            obs, info = env.reset()
+        
+        if truncated:
+            print(f"\n✗ Episode timeout at step {i}")
             obs, info = env.reset()
     
     env.close()
@@ -226,8 +254,8 @@ if __name__ == "__main__":
     print("="*60)
     print("\nOptions:")
     print("1. Quick Demo (random agent)")
-    print("2. Train PPO")
-    print("3. Train on maze")
+    print("2. Train PPO on random map")
+    print("3. Train PPO on maze")
     print("4. Evaluate trained model")
     
     choice = input("\nChoice (1-4): ")
@@ -236,19 +264,28 @@ if __name__ == "__main__":
         quick_demo()
     
     elif choice == '2':
+        print("\nTraining PPO on random obstacles...")
+        print("This will take 15-20 minutes.")
         model = train_pybullet('PPO', 'random', timesteps=200000)
-        print("\nTesting trained model...")
+        print("\nTraining complete! Testing trained model...")
         evaluate_pybullet('models/pybullet_PPO_random_final', 'random', episodes=3)
     
     elif choice == '3':
+        print("\nTraining PPO on maze...")
+        print("This will take 20-30 minutes.")
         model = train_pybullet('PPO', 'maze', timesteps=200000)
-        print("\nTesting trained model...")
+        print("\nTraining complete! Testing trained model...")
         evaluate_pybullet('models/pybullet_PPO_maze_final', 'maze', episodes=3)
     
     elif choice == '4':
-        model_path = input("Enter model path: ")
+        model_path = input("\nEnter model path (e.g., models/pybullet_PPO_random_final): ")
         map_type = input("Enter map type (random/maze/grid): ")
-        evaluate_pybullet(model_path, map_type, episodes=5)
+        
+        if not os.path.exists(model_path + ".zip"):
+            print(f"\nError: Model not found at {model_path}")
+            print("Make sure to train a model first using options 2 or 3.")
+        else:
+            evaluate_pybullet(model_path, map_type, episodes=5)
     
     else:
         print("Invalid choice")

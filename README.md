@@ -35,6 +35,8 @@ pip install --upgrade pip
 
 # Now install packages
 pip install gymnasium numpy matplotlib stable-baselines3 torch scipy pandas
+pip install tqdm rich
+
 ```
 
 ## Project Structure
