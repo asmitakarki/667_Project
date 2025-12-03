@@ -69,7 +69,7 @@ python main.py --mode train --map-type random --algorithm DQN --timesteps 50000
 ### 3. Test A* Baseline
 ```bash
 # Test A* on spiral map
-python main.py --mode astar --map-type spiral --episodes 10
+python main.py --mode astar --map-type random --episodes 10
 ```
 
 ### 4. Evaluate Trained Agent
@@ -126,7 +126,7 @@ python main.py --mode train --map-type maze --algorithm DQN --timesteps 100000
 python main.py --mode train --map-type maze --algorithm A2C --timesteps 100000
 
 # Evaluate each
-python main.py --mode evaluate --model-path models/PPO_maze_final --map-type maze
+python main.py --mode evaluate --model-path models/PPO_random_pybullet.zip --map-type maze
 python main.py --mode evaluate --model-path models/DQN_maze_final --map-type maze
 python main.py --mode evaluate --model-path models/A2C_maze_final --map-type maze
 ```
@@ -135,7 +135,7 @@ python main.py --mode evaluate --model-path models/A2C_maze_final --map-type maz
 ```python
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
-from enhanced_pathfinding_env import EnhancedPathfindingEnv
+from pybullet_pathfinding_env import EnhancedPathfindingEnv
 
 # Stage 1: No obstacles
 env = DummyVecEnv([lambda: EnhancedPathfindingEnv(grid_size=20, map_type='random', num_obstacles=0)])

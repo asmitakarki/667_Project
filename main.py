@@ -5,16 +5,24 @@ Run this script to execute different parts of your project
 Usage:
     python main.py --mode [visualize|train|evaluate|compare|demo]
 """
-
 import argparse
 import sys
+from realistic import PyBulletPathfindingEnv
+from astar_baseline import AStarPathfinder
+import numpy as np
+import time
+from stable_baselines3 import PPO, SAC, TD3
+from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3 import PPO, SAC, TD3
+from grid_bounded_env import GridBoundedEnv as PyBulletPathfindingEnv
+import numpy as np
+import pybullet as p
 
 def visualize_maps():
     """Visualize all different map types in PyBullet"""
     print("\n=== Visualizing 3D Map Types ===\n")
-    from pybullet_pathfinding_env import PyBulletPathfindingEnv
-    import time
-    
+
     map_types = ['random', 'maze', 'grid']
     
     for map_type in map_types:
@@ -42,14 +50,9 @@ def visualize_maps():
         print(f"  {map_type} map shown.")
         time.sleep(1)
 
-def train_agent(map_type='random', algorithm='PPO', timesteps=200000):
+def train_agent(map_type='random', algorithm='PPO', timesteps=5000):
     """Train an RL agent in PyBullet"""
     print(f"\n=== Training {algorithm} on {map_type} map (3D) ===\n")
-    
-    from stable_baselines3 import PPO, SAC, TD3
-    from stable_baselines3.common.vec_env import DummyVecEnv
-    from stable_baselines3.common.monitor import Monitor
-    from pybullet_pathfinding_env import PyBulletPathfindingEnv
     
     def make_env():
         env = PyBulletPathfindingEnv(
@@ -95,9 +98,6 @@ def evaluate_agent(model_path, map_type='random', num_episodes=10):
     """Evaluate a trained agent in PyBullet"""
     print(f"\n=== Evaluating Agent on {map_type} map (3D) ===\n")
     
-    from stable_baselines3 import PPO, SAC, TD3
-    from realistic import PyBulletPathfindingEnv
-    import numpy as np
     
     # Load model
     try:
@@ -164,9 +164,6 @@ def test_astar(map_type='random', num_episodes=5):
     print(f"\n=== Testing A* on {map_type} map (3D) ===\n")
     print("Note: A* plans in 2D but executes in 3D physics simulation\n")
     
-    from pybullet_pathfinding_env import PyBulletPathfindingEnv
-    from astar_baseline import AStarPathfinder
-    import numpy as np
     
     env = PyBulletPathfindingEnv(
         grid_size=20,
@@ -190,7 +187,6 @@ def test_astar(map_type='random', num_episodes=5):
         # Get obstacles (need to access from environment)
         obstacles_2d = []
         for obs_id in env.obstacle_ids:
-            import pybullet as p
             pos, _ = p.getBasePositionAndOrientation(obs_id)
             # Approximate obstacle size
             obstacles_2d.append({
@@ -268,31 +264,6 @@ def test_astar(map_type='random', num_episodes=5):
     if episode_lengths:
         print(f"Average steps: {np.mean(episode_lengths):.1f}")
 
-def run_comparison():
-    """Run full comparison between RL and A* in 3D"""
-    print("\n=== Running 3D Comparison (RL vs A*) ===\n")
-    print("This will train agents and test them. This takes time!\n")
-    
-    from pybullet_comparison import PyBulletComparison
-    
-    map_configs = [
-        ('random', {'num_obstacles': 5}),
-        ('maze', {'cell_size': 2}),
-        ('grid', {'spacing': 3}),
-    ]
-    
-    comparison = PyBulletComparison(grid_size=20)
-    
-    results = comparison.run_full_comparison(
-        map_configs=map_configs,
-        algorithms=['PPO'],
-        num_eval_episodes=5,
-        training_timesteps=100000  # Reduced for faster testing
-    )
-    
-    comparison.generate_comparison_plots()
-    comparison.save_results()
-
 def demo_mode():
     """Interactive demo"""
     print("\n=== Interactive 3D Demo ===\n")
@@ -303,8 +274,7 @@ def demo_mode():
     print("4. View all map types")
     
     choice = input("\nEnter choice (1-4): ")
-    
-    from pybullet_pathfinding_env import PyBulletPathfindingEnv
+
     
     if choice == '1':
         map_type = 'random'
@@ -353,7 +323,7 @@ def main():
     parser.add_argument('--algorithm', type=str, default='PPO',
                        choices=['PPO', 'SAC', 'TD3'],
                        help='RL algorithm')
-    parser.add_argument('--timesteps', type=int, default=200000,
+    parser.add_argument('--timesteps', type=int, default=5000,
                        help='Training timesteps')
     parser.add_argument('--model-path', type=str, default=None,
                        help='Path to trained model for evaluation')
@@ -376,9 +346,6 @@ def main():
     
     elif args.mode == 'astar':
         test_astar(args.map_type, args.episodes)
-    
-    elif args.mode == 'compare':
-        run_comparison()
     
     elif args.mode == 'demo':
         demo_mode()

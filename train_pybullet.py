@@ -6,7 +6,7 @@ from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
-from pybullet_pathfinding_env import PyBulletPathfindingEnv
+from grid_bounded_env import GridBoundedEnv as PyBulletPathfindingEnv
 import numpy as np
 import os
 
@@ -23,7 +23,7 @@ def make_env(grid_size=20, map_type='random', rank=0, **map_kwargs):
         return env
     return _init
 
-def train_pybullet(algorithm='PPO', map_type='random', timesteps=200000):
+def train_pybullet(algorithm='PPO', map_type='random', timesteps=5000):
     """
     Train an agent on PyBullet environment
     
@@ -266,14 +266,14 @@ if __name__ == "__main__":
     elif choice == '2':
         print("\nTraining PPO on random obstacles...")
         print("This will take 15-20 minutes.")
-        model = train_pybullet('PPO', 'random', timesteps=200000)
+        model = train_pybullet('PPO', 'random', timesteps=5000)
         print("\nTraining complete! Testing trained model...")
         evaluate_pybullet('models/pybullet_PPO_random_final', 'random', episodes=3)
     
     elif choice == '3':
         print("\nTraining PPO on maze...")
         print("This will take 20-30 minutes.")
-        model = train_pybullet('PPO', 'maze', timesteps=200000)
+        model = train_pybullet('PPO', 'maze', timesteps=5000)
         print("\nTraining complete! Testing trained model...")
         evaluate_pybullet('models/pybullet_PPO_maze_final', 'maze', episodes=3)
     
