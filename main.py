@@ -96,7 +96,7 @@ def evaluate_agent(model_path, map_type='random', num_episodes=10):
     print(f"\n=== Evaluating Agent on {map_type} map (3D) ===\n")
     
     from stable_baselines3 import PPO, SAC, TD3
-    from pybullet_pathfinding_env import PyBulletPathfindingEnv
+    from realistic import PyBulletPathfindingEnv
     import numpy as np
     
     # Load model
