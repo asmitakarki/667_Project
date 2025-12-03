@@ -1,6 +1,6 @@
 """
-PyBullet 3D Pathfinding Environment
-More realistic physics simulation with a wheeled robot
+PyBullet 3D Pathfinding Environment - FIXED with Velocity Control
+Uses direct velocity control instead of forces for reliable movement
 """
 
 import gymnasium as gym
@@ -12,13 +12,7 @@ import time
 
 class PyBulletPathfindingEnv(gym.Env):
     """
-    3D pathfinding environment using PyBullet physics engine
-    
-    Features:
-    - Realistic physics simulation
-    - Wheeled robot with differential drive
-    - 3D obstacles
-    - Collision detection
+    3D pathfinding with VELOCITY CONTROL (much more reliable than forces)
     """
     
     metadata = {'render_modes': ['human', 'rgb_array'], 'render_fps': 30}
@@ -31,8 +25,7 @@ class PyBulletPathfindingEnv(gym.Env):
         self.map_kwargs = map_kwargs
         self.render_mode = render_mode
         
-        # Action space: [left_wheel_velocity, right_wheel_velocity]
-        # Discrete version: 0=forward, 1=turn_right, 2=turn_left, 3=backward
+        # Action space: 0=forward, 1=turn_left, 2=turn_right, 3=backward
         self.action_space = spaces.Discrete(4)
         
         # Observation: [robot_x, robot_y, robot_yaw, goal_x, goal_y]
@@ -42,7 +35,7 @@ class PyBulletPathfindingEnv(gym.Env):
             dtype=np.float32
         )
         
-        # PyBullet setup
+        # PyBullet IDs
         self.physics_client = None
         self.robot_id = None
         self.goal_id = None
@@ -55,23 +48,33 @@ class PyBulletPathfindingEnv(gym.Env):
         self.robot_pos = None
         self.goal_pos = None
         
+        # Movement parameters
+        self.linear_speed = 2.0  # meters per second
+        self.angular_speed = 2.0  # radians per second
+        
         # Initialize PyBullet
         self._init_pybullet()
     
     def _init_pybullet(self):
-        """Initialize PyBullet physics engine"""
+        """Initialize PyBullet"""
         if self.physics_client is not None:
             p.disconnect(self.physics_client)
         
         if self.render_mode == 'human':
             self.physics_client = p.connect(p.GUI)
+            p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         else:
             self.physics_client = p.connect(p.DIRECT)
         
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.setGravity(0, 0, -9.81)
         
-        # Load ground plane
+        # CRITICAL: Disable real-time simulation
+        p.setRealTimeSimulation(0)
+        
+        p.setGravity(0, 0, -9.81)
+        p.setPhysicsEngineParameter(fixedTimeStep=1./240.)
+        
+        # Load ground
         self.plane_id = p.loadURDF("plane.urdf")
         
         # Set camera
@@ -83,73 +86,59 @@ class PyBulletPathfindingEnv(gym.Env):
         )
     
     def _create_robot(self, position):
-        """Create a simple wheeled robot"""
-        # Create robot body (sphere for simplicity)
-        collision_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=0.3)
-        visual_shape = p.createVisualShape(
-            p.GEOM_SPHERE,
-            radius=0.3,
-            rgbaColor=[0, 0, 1, 1]  # Blue
+        """Create robot body"""
+        # Main body
+        base_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=0.3)
+        base_visual = p.createVisualShape(
+            p.GEOM_SPHERE, radius=0.3, rgbaColor=[0, 0, 1, 1]
+        )
+        
+        # Direction indicator
+        indicator_collision = p.createCollisionShape(
+            p.GEOM_CYLINDER, radius=0.08, height=0.3
+        )
+        indicator_visual = p.createVisualShape(
+            p.GEOM_CYLINDER, radius=0.08, length=0.3, rgbaColor=[1, 0, 0, 1]
         )
         
         self.robot_id = p.createMultiBody(
             baseMass=1.0,
-            baseCollisionShapeIndex=collision_shape,
-            baseVisualShapeIndex=visual_shape,
-            basePosition=[position[0], position[1], 0.3]
+            baseCollisionShapeIndex=base_collision,
+            baseVisualShapeIndex=base_visual,
+            basePosition=[position[0], position[1], 0.3],
+            linkMasses=[0.1],
+            linkCollisionShapeIndices=[indicator_collision],
+            linkVisualShapeIndices=[indicator_visual],
+            linkPositions=[[0.38, 0, 0]],
+            linkOrientations=[[0, 0.7071, 0, 0.7071]],
+            linkInertialFramePositions=[[0, 0, 0]],
+            linkInertialFrameOrientations=[[0, 0, 0, 1]],
+            linkParentIndices=[0],
+            linkJointTypes=[p.JOINT_FIXED],
+            linkJointAxis=[[0, 0, 1]]
         )
         
-        # Add direction indicator (small cylinder pointing forward)
-        indicator_collision = p.createCollisionShape(
-            p.GEOM_CYLINDER,
-            radius=0.1,
-            height=0.4
-        )
-        indicator_visual = p.createVisualShape(
-            p.GEOM_CYLINDER,
-            radius=0.1,
-            length=0.4,
-            rgbaColor=[1, 0, 0, 1]  # Red indicator
-        )
-        
-        # Attach indicator to robot (pointing in x direction)
-        p.createMultiBody(
-            baseMass=0.01,
-            baseCollisionShapeIndex=indicator_collision,
-            baseVisualShapeIndex=indicator_visual,
-            basePosition=[position[0] + 0.4, position[1], 0.3],
-            baseOrientation=p.getQuaternionFromEuler([0, np.pi/2, 0])
-        )
+        # Set friction
+        p.changeDynamics(self.robot_id, -1, lateralFriction=0.8)
     
     def _create_goal(self, position):
         """Create goal marker"""
-        collision_shape = p.createCollisionShape(
-            p.GEOM_CYLINDER,
-            radius=0.5,
-            height=0.1
-        )
         visual_shape = p.createVisualShape(
-            p.GEOM_CYLINDER,
-            radius=0.5,
-            length=0.1,
-            rgbaColor=[0, 1, 0, 0.5]  # Green, semi-transparent
+            p.GEOM_CYLINDER, radius=0.5, length=0.1, rgbaColor=[0, 1, 0, 0.5]
         )
-        
         self.goal_id = p.createMultiBody(
             baseMass=0,
-            baseCollisionShapeIndex=-1,  # No collision for goal
+            baseCollisionShapeIndex=-1,
             baseVisualShapeIndex=visual_shape,
             basePosition=[position[0], position[1], 0.05]
         )
     
     def _create_obstacles(self):
-        """Create obstacles based on map type"""
+        """Create obstacles"""
         from map_generators import (
-            RandomObstaclesGenerator, SpiralMapGenerator, 
-            MazeMapGenerator, GridMapGenerator, CorridorMapGenerator
+            RandomObstaclesGenerator, MazeMapGenerator, GridMapGenerator
         )
         
-        # Generate map
         if self.map_type == 'random':
             num_obstacles = self.map_kwargs.get('num_obstacles', 5)
             generator = RandomObstaclesGenerator(self.grid_size, num_obstacles)
@@ -160,31 +149,23 @@ class PyBulletPathfindingEnv(gym.Env):
             spacing = self.map_kwargs.get('spacing', 3)
             generator = GridMapGenerator(self.grid_size, spacing=spacing)
         else:
-            # Default to random
             generator = RandomObstaclesGenerator(self.grid_size, 5)
         
         obstacles = generator.get_obstacles()
         
-        # Create 3D obstacles
         for obs in obstacles:
             pos = obs['pos']
             size = obs['size']
             
-            # Create cylinder obstacle
             collision_shape = p.createCollisionShape(
-                p.GEOM_CYLINDER,
-                radius=size,
-                height=2.0
+                p.GEOM_CYLINDER, radius=size, height=2.0
             )
             visual_shape = p.createVisualShape(
-                p.GEOM_CYLINDER,
-                radius=size,
-                length=2.0,
-                rgbaColor=[0.5, 0.5, 0.5, 1]  # Gray
+                p.GEOM_CYLINDER, radius=size, length=2.0, rgbaColor=[0.5, 0.5, 0.5, 1]
             )
             
             obstacle_id = p.createMultiBody(
-                baseMass=0,  # Static
+                baseMass=0,
                 baseCollisionShapeIndex=collision_shape,
                 baseVisualShapeIndex=visual_shape,
                 basePosition=[pos[0], pos[1], 1.0]
@@ -193,19 +174,23 @@ class PyBulletPathfindingEnv(gym.Env):
             self.obstacle_ids.append(obstacle_id)
     
     def _find_free_position(self):
-        """Find a position not occupied by obstacles"""
+        """Find free position away from obstacles"""
         max_attempts = 100
+        min_obstacle_distance = 1.5
+        
         for _ in range(max_attempts):
             pos = np.array([
                 np.random.uniform(2, self.grid_size - 2),
                 np.random.uniform(2, self.grid_size - 2)
             ])
             
-            # Check if position is free (simple check)
             is_free = True
-            if len(self.obstacle_ids) > 0:
-                # Just check distance for now
-                is_free = True
+            for obs_id in self.obstacle_ids:
+                obs_pos, _ = p.getBasePositionAndOrientation(obs_id)
+                distance = np.linalg.norm(pos - np.array([obs_pos[0], obs_pos[1]]))
+                if distance < min_obstacle_distance:
+                    is_free = False
+                    break
             
             if is_free:
                 return pos
@@ -217,7 +202,7 @@ class PyBulletPathfindingEnv(gym.Env):
         
         self.step_count = 0
         
-        # Clear existing objects
+        # Clear existing
         if self.robot_id is not None:
             p.removeBody(self.robot_id)
         if self.goal_id is not None:
@@ -226,22 +211,19 @@ class PyBulletPathfindingEnv(gym.Env):
             p.removeBody(obs_id)
         self.obstacle_ids = []
         
-        # Create obstacles first
+        # Create new
         self._create_obstacles()
-        
-        # Create robot and goal
         self.robot_pos = self._find_free_position()
         self.goal_pos = self._find_free_position()
         
-        # Ensure goal is far from robot
         while np.linalg.norm(self.robot_pos - self.goal_pos) < self.grid_size * 0.3:
             self.goal_pos = self._find_free_position()
         
         self._create_robot(self.robot_pos)
         self._create_goal(self.goal_pos)
         
-        # Let physics settle
-        for _ in range(10):
+        # Settle physics
+        for _ in range(50):
             p.stepSimulation()
         
         return self._get_obs(), self._get_info()
@@ -249,18 +231,7 @@ class PyBulletPathfindingEnv(gym.Env):
     def step(self, action):
         self.step_count += 1
         
-        # Map discrete actions to velocities
-        # 0=forward, 1=turn_right, 2=turn_left, 3=backward
-        action_map = {
-            0: [5, 5],      # Forward
-            1: [5, -5],     # Turn right
-            2: [-5, 5],     # Turn left
-            3: [-5, -5]     # Backward
-        }
-        
-        left_vel, right_vel = action_map[action]
-        
-        # Get current robot state
+        # Get current state
         pos, orn = p.getBasePositionAndOrientation(self.robot_id)
         euler = p.getEulerFromQuaternion(orn)
         yaw = euler[2]
@@ -269,37 +240,38 @@ class PyBulletPathfindingEnv(gym.Env):
             np.array([pos[0], pos[1]]) - self.goal_pos
         )
         
-        # Apply forces to simulate differential drive
-        forward_force = (left_vel + right_vel) / 2
-        turning_force = (right_vel - left_vel) / 2
+        # Calculate desired velocities based on action
+        if action == 0:  # Forward
+            linear_vel_x = self.linear_speed * np.cos(yaw)
+            linear_vel_y = self.linear_speed * np.sin(yaw)
+            angular_vel = 0
+        elif action == 1:  # Turn left
+            linear_vel_x = 0
+            linear_vel_y = 0
+            angular_vel = self.angular_speed
+        elif action == 2:  # Turn right
+            linear_vel_x = 0
+            linear_vel_y = 0
+            angular_vel = -self.angular_speed
+        else:  # Backward
+            linear_vel_x = -self.linear_speed * 0.5 * np.cos(yaw)
+            linear_vel_y = -self.linear_speed * 0.5 * np.sin(yaw)
+            angular_vel = 0
         
-        # Apply force in robot's forward direction
-        force_x = forward_force * np.cos(yaw)
-        force_y = forward_force * np.sin(yaw)
-        
-        p.applyExternalForce(
+        # Apply velocities directly (this is the key fix!)
+        p.resetBaseVelocity(
             self.robot_id,
-            -1,
-            [force_x, force_y, 0],
-            pos,
-            p.WORLD_FRAME
-        )
-        
-        # Apply torque for turning
-        p.applyExternalTorque(
-            self.robot_id,
-            -1,
-            [0, 0, turning_force],
-            p.WORLD_FRAME
+            linearVelocity=[linear_vel_x, linear_vel_y, 0],
+            angularVelocity=[0, 0, angular_vel]
         )
         
         # Step simulation
-        for _ in range(10):  # Multiple physics steps per action
+        for _ in range(10):
             p.stepSimulation()
             if self.render_mode == 'human':
                 time.sleep(1./240.)
         
-        # Get new position
+        # Get new state
         pos, orn = p.getBasePositionAndOrientation(self.robot_id)
         euler = p.getEulerFromQuaternion(orn)
         
@@ -314,12 +286,16 @@ class PyBulletPathfindingEnv(gym.Env):
         
         # Check termination
         terminated = new_distance < 0.5
-        truncated = self.step_count >= self.max_steps
         
-        # Check if robot fell off or went out of bounds
-        if pos[2] < 0.1 or not (0 < pos[0] < self.grid_size and 0 < pos[1] < self.grid_size):
+        # Check truncation
+        out_of_bounds = not (0.5 < pos[0] < self.grid_size - 0.5 and 
+                            0.5 < pos[1] < self.grid_size - 0.5)
+        fell_through = pos[2] < 0.1
+        
+        truncated = (self.step_count >= self.max_steps) or out_of_bounds or fell_through
+        
+        if out_of_bounds or fell_through:
             reward = -50
-            truncated = True
         
         return self._get_obs(), reward, terminated, truncated, self._get_info()
     
@@ -348,80 +324,90 @@ class PyBulletPathfindingEnv(gym.Env):
         }
     
     def _check_collision(self):
-        """Check if robot collided with obstacles"""
+        """Check collision with obstacles"""
         contact_points = p.getContactPoints(bodyA=self.robot_id)
         
-        # Check if any contact with obstacles (not ground)
         for contact in contact_points:
-            if contact[2] != self.plane_id:  # Not ground
+            if contact[2] in self.obstacle_ids:
                 return True
         
         return False
     
     def _calculate_reward(self, collision, old_distance, new_distance):
         """Calculate reward"""
-        # Goal reached
         if new_distance < 0.5:
             return 100.0
         
-        # Collision penalty
         if collision:
             return -10.0
         
-        # Progress reward
         progress = old_distance - new_distance
-        distance_reward = progress * 5.0
+        distance_reward = progress * 10.0
         
-        # Time penalty
-        time_penalty = -0.05
-        
-        # Proximity bonus
-        proximity_bonus = 0
         if new_distance < 5.0:
-            proximity_bonus = (5.0 - new_distance) * 0.5
+            proximity_bonus = (5.0 - new_distance) * 2.0
+        else:
+            proximity_bonus = 0
+        
+        time_penalty = -0.1
         
         return time_penalty + distance_reward + proximity_bonus
     
     def render(self):
-        """Render is handled by PyBullet GUI"""
+        """Render handled by PyBullet"""
         pass
     
     def close(self):
-        """Close PyBullet connection"""
+        """Close PyBullet"""
         if self.physics_client is not None:
             p.disconnect(self.physics_client)
+            self.physics_client = None
 
 
-# Test the environment
 if __name__ == "__main__":
-    print("Testing PyBullet Pathfinding Environment\n")
+    print("\n" + "="*70)
+    print("Testing PyBullet Environment with VELOCITY CONTROL")
+    print("="*70)
     
     env = PyBulletPathfindingEnv(
         grid_size=20,
         map_type='random',
         render_mode='human',
-        num_obstacles=5
+        num_obstacles=3
     )
     
-    print("Environment created. Testing with random actions...")
-    print("Close the PyBullet window to stop.\n")
+    print("\n✓ Environment created")
+    print("\nThe robot should now ACTUALLY MOVE!")
+    print("Watch it navigate with random actions...\n")
     
     obs, info = env.reset()
+    print(f"Start: ({obs[0]:.2f}, {obs[1]:.2f})")
+    print(f"Goal:  ({obs[3]:.2f}, {obs[4]:.2f})")
+    print(f"Distance: {info['distance_to_goal']:.2f}m\n")
     
+    episode = 1
     for i in range(500):
         action = env.action_space.sample()
         obs, reward, terminated, truncated, info = env.step(action)
         
-        if i % 50 == 0:
-            print(f"Step {i}: Distance to goal = {info['distance_to_goal']:.2f}")
+        if i % 20 == 0:
+            action_names = ["Forward", "Left", "Right", "Back"]
+            print(f"Step {i}: Action={action_names[action]}, "
+                  f"Pos=({obs[0]:.2f}, {obs[1]:.2f}), "
+                  f"Distance={info['distance_to_goal']:.2f}m, "
+                  f"Reward={reward:.2f}")
         
         if terminated:
-            print(f"\n✓ Goal reached in {info['step_count']} steps!")
+            print(f"\n🎉 Episode {episode} SUCCESS in {info['step_count']} steps!\n")
+            episode += 1
             obs, info = env.reset()
         
         if truncated:
-            print(f"\n✗ Episode truncated at {info['step_count']} steps")
+            print(f"\n❌ Episode {episode} failed at {info['step_count']} steps\n")
+            episode += 1
             obs, info = env.reset()
     
     env.close()
-    print("\nTest complete!")
+    print("\n" + "="*70)
+    print("Test complete! Robot should have been moving around.")
+    print("="*70)
