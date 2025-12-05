@@ -6,9 +6,10 @@ from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
-from pybullet_pathfinding_env import PyBulletPathfindingEnv
+from grid_bounded_env import GridBoundedEnv as PyBulletPathfindingEnv
 import numpy as np
 import os
+
 
 def make_env(grid_size=20, map_type='random', rank=0, **map_kwargs):
     """Create environment"""
@@ -23,7 +24,8 @@ def make_env(grid_size=20, map_type='random', rank=0, **map_kwargs):
         return env
     return _init
 
-def train_pybullet(algorithm='PPO', map_type='random', timesteps=200000):
+
+def train_pybullet(algorithm='PPO', map_type='random', *, timesteps):
     """
     Train an agent on PyBullet environment
     
@@ -133,6 +135,7 @@ def train_pybullet(algorithm='PPO', map_type='random', timesteps=200000):
     
     return model
 
+
 def evaluate_pybullet(model_path, map_type='random', episodes=5):
     """Evaluate trained model"""
     print("\n" + "="*60)
@@ -213,6 +216,7 @@ def evaluate_pybullet(model_path, map_type='random', episodes=5):
         print(f"  Average reward: {np.mean(episode_rewards):.1f} ± {np.std(episode_rewards):.1f}")
     print("="*60)
 
+
 def quick_demo():
     """Quick demo with random agent"""
     print("\n" + "="*60)
@@ -228,9 +232,7 @@ def quick_demo():
     
     obs, info = env.reset()
     
-    print("Watch the robot (blue sphere) move randomly in PyBullet...")
-    print("It's trying to reach the green goal while avoiding gray obstacles.")
-    print("The red cylinder shows which direction the robot is facing.\n")
+    print("Watch the robot move randomly in PyBullet...")
     print("Close the PyBullet window when done.\n")
     
     for i in range(300):
@@ -247,45 +249,32 @@ def quick_demo():
     
     env.close()
 
+
 if __name__ == "__main__":
-    import sys
-    
-    print("\nPyBullet Pathfinding Training")
-    print("="*60)
-    print("\nOptions:")
-    print("1. Quick Demo (random agent)")
-    print("2. Train PPO on random map")
-    print("3. Train PPO on maze")
-    print("4. Evaluate trained model")
-    
-    choice = input("\nChoice (1-4): ")
-    
-    if choice == '1':
-        quick_demo()
-    
-    elif choice == '2':
-        print("\nTraining PPO on random obstacles...")
-        print("This will take 15-20 minutes.")
-        model = train_pybullet('PPO', 'random', timesteps=200000)
-        print("\nTraining complete! Testing trained model...")
-        evaluate_pybullet('models/pybullet_PPO_random_final', 'random', episodes=3)
-    
-    elif choice == '3':
-        print("\nTraining PPO on maze...")
-        print("This will take 20-30 minutes.")
-        model = train_pybullet('PPO', 'maze', timesteps=200000)
-        print("\nTraining complete! Testing trained model...")
-        evaluate_pybullet('models/pybullet_PPO_maze_final', 'maze', episodes=3)
-    
-    elif choice == '4':
-        model_path = input("\nEnter model path (e.g., models/pybullet_PPO_random_final): ")
-        map_type = input("Enter map type (random/maze/grid): ")
-        
-        if not os.path.exists(model_path + ".zip"):
-            print(f"\nError: Model not found at {model_path}")
-            print("Make sure to train a model first using options 2 or 3.")
+    # Simple CLI instead of hardcoded 5000 timesteps
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train / evaluate PyBullet RL agent")
+    parser.add_argument("--mode", type=str, required=True,
+                        choices=["train", "evaluate", "demo"],
+                        help="What to do")
+    parser.add_argument("--algorithm", type=str, default="PPO",
+                        choices=["PPO", "SAC", "TD3"])
+    parser.add_argument("--map-type", type=str, default="random",
+                        choices=["random", "maze", "grid"])
+    parser.add_argument("--timesteps", type=int, default=5000,
+                        help="Training timesteps")
+    parser.add_argument("--model-path", type=str,
+                        help="Path to saved model for evaluation")
+
+    args = parser.parse_args()
+
+    if args.mode == "train":
+        train_pybullet(args.algorithm, args.map_type, timesteps=args.timesteps)
+    elif args.mode == "evaluate":
+        if not args.model_path:
+            print("Error: --model-path is required for evaluate mode")
         else:
-            evaluate_pybullet(model_path, map_type, episodes=5)
-    
-    else:
-        print("Invalid choice")
+            evaluate_pybullet(args.model_path, args.map_type)
+    elif args.mode == "demo":
+        quick_demo()

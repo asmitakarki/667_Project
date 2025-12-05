@@ -4,7 +4,6 @@ A* Pathfinding Algorithm - Baseline for comparison with RL methods
 This provides a deterministic baseline to compare against RL agents.
 Works with both 2D and 3D (PyBullet) environments.
 """
-
 import numpy as np
 import heapq
 import matplotlib.pyplot as plt
