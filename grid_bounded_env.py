@@ -1,7 +1,9 @@
-"""
-Clean Grid-Based Environment with Visible Boundaries
-Like the Pioneer robot image - finite world with clear boundaries
-"""
+# ============================================================
+# Clean Grid/Spiral Road Environment for PyBullet
+# Two map types: "spiral" and "city"
+# Roads are black, buildings fill blocks, robot must stay on road.
+# Medium road width. Small obstacles avoidable, big ones block.
+# ============================================================
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -9,549 +11,521 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 import time
+import math
+
 
 class GridBoundedEnv(gym.Env):
-    """
-    Clean grid-based environment with visible walls
-    - Finite bounded world
-    - Grid tiles visible
-    - Walls around perimeter
-    - Simple clean aesthetics
-    """
-    
-    metadata = {'render_modes': ['human', 'rgb_array'], 'render_fps': 30}
-    
-    def __init__(self, grid_size=20, map_type='random', render_mode=None, **map_kwargs):
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
+
+    def __init__(
+        self,
+        grid_size=20,
+        map_type="spiral",
+        render_mode=None,
+        num_obstacles=5,
+        **kwargs
+    ):
         super().__init__()
-        
+
         self.grid_size = grid_size
         self.map_type = map_type
-        self.map_kwargs = map_kwargs
         self.render_mode = render_mode
-        
-        # Action space: 0=forward, 1=turn_left, 2=turn_right, 3=backward
-        self.action_space = spaces.Discrete(4)
-        
-        # Observation: [robot_x, robot_y, robot_yaw, goal_x, goal_y]
-        self.observation_space = spaces.Box(
-            low=np.array([0, 0, -np.pi, 0, 0]),
-            high=np.array([grid_size, grid_size, np.pi, grid_size, grid_size]),
-            dtype=np.float32
-        )
-        
-        # PyBullet IDs
+        self.num_obstacles = num_obstacles
+
+        # internal bookkeeping
         self.physics_client = None
         self.robot_id = None
         self.goal_id = None
+        self.road_tile_ids = []
+        self.building_ids = []
+        self.extra_body_ids = []
         self.obstacle_ids = []
         self.wall_ids = []
-        self.tile_ids = []
-        
-        self.step_count = 0
-        self.max_steps = grid_size * 10
-        
-        self.robot_pos = None
-        self.goal_pos = None
-        
-        # Movement parameters
+
+        # movement parameters
         self.linear_speed = 2.5
         self.angular_speed = 2.0
-        
-        # Initialize PyBullet
+
+        # Discrete actions
+        self.action_space = spaces.Discrete(4)
+        # obs: [robot_x, robot_y, yaw, goal_x, goal_y]
+        self.observation_space = spaces.Box(
+            low=np.array([0, 0, -np.pi, 0, 0], dtype=np.float32),
+            high=np.array([grid_size, grid_size, np.pi, grid_size, grid_size], dtype=np.float32),
+        )
+
+        self.max_steps = grid_size * 15
+        self.step_count = 0
+
+        # initialize Bullet
         self._init_pybullet()
-    
+
+    # ------------------------------------------------------------
+    # PyBullet setup
+    # ------------------------------------------------------------
     def _init_pybullet(self):
-        """Initialize PyBullet"""
         if self.physics_client is not None:
             p.disconnect(self.physics_client)
-        
-        if self.render_mode == 'human':
+
+        if self.render_mode == "human":
             self.physics_client = p.connect(p.GUI)
             p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
-            p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 1)
         else:
             self.physics_client = p.connect(p.DIRECT)
-        
+
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.setRealTimeSimulation(0)
         p.setGravity(0, 0, -9.81)
-        p.setPhysicsEngineParameter(fixedTimeStep=1./240.)
-        
-        # Create grid floor and walls
-        self._create_grid_floor()
+        p.setRealTimeSimulation(0)
+        p.setPhysicsEngineParameter(fixedTimeStep=1.0 / 240.0)
+
+        # floor + walls
+        self._create_tiled_floor()
         self._create_boundary_walls()
-        
-        # Better camera angle
+
+        # camera
         p.resetDebugVisualizerCamera(
             cameraDistance=self.grid_size * 1.2,
             cameraYaw=45,
             cameraPitch=-50,
-            cameraTargetPosition=[self.grid_size/2, self.grid_size/2, 0]
+            cameraTargetPosition=[self.grid_size / 2, self.grid_size / 2, 0],
         )
-    
-    def _create_grid_floor(self):
-        """Create visible grid tiles like in the image"""
-        tile_size = 1.0  # Each tile is 1x1
-        tile_height = 0.05
-        
-        # Two colors for checkerboard pattern (subtle)
-        color1 = [0.85, 0.82, 0.78, 1]  # Light beige
-        color2 = [0.78, 0.75, 0.71, 1]  # Slightly darker beige
-        
-        num_tiles = int(self.grid_size / tile_size)
-        
-        for i in range(num_tiles):
-            for j in range(num_tiles):
-                # Alternate colors
-                if (i + j) % 2 == 0:
-                    color = color1
-                else:
-                    color = color2
-                
-                # Create tile
-                tile_collision = p.createCollisionShape(
-                    p.GEOM_BOX,
-                    halfExtents=[tile_size/2, tile_size/2, tile_height/2]
+
+    # ------------------------------------------------------------
+    def _create_tiled_floor(self):
+        tile_h = 0.05
+        color1 = [0.88, 0.85, 0.82, 1]
+        color2 = [0.82, 0.79, 0.76, 1]
+
+        for i in range(self.grid_size):
+            for j in range(self.grid_size):
+                color = color1 if ((i + j) % 2 == 0) else color2
+                col = p.createCollisionShape(
+                    p.GEOM_BOX, halfExtents=[0.5, 0.5, tile_h / 2]
                 )
-                tile_visual = p.createVisualShape(
-                    p.GEOM_BOX,
-                    halfExtents=[tile_size/2, tile_size/2, tile_height/2],
-                    rgbaColor=color
+                vis = p.createVisualShape(
+                    p.GEOM_BOX, halfExtents=[0.5, 0.5, tile_h / 2], rgbaColor=color
                 )
-                
-                tile_id = p.createMultiBody(
+                p.createMultiBody(
                     baseMass=0,
-                    baseCollisionShapeIndex=tile_collision,
-                    baseVisualShapeIndex=tile_visual,
-                    basePosition=[i * tile_size + tile_size/2, 
-                                 j * tile_size + tile_size/2, 
-                                 tile_height/2]
+                    baseCollisionShapeIndex=col,
+                    baseVisualShapeIndex=vis,
+                    basePosition=[i + 0.5, j + 0.5, tile_h / 2],
                 )
-                
-                p.changeDynamics(tile_id, -1, lateralFriction=0.8)
-                self.tile_ids.append(tile_id)
-    
+
+    # ------------------------------------------------------------
     def _create_boundary_walls(self):
-        """Create walls around the perimeter - finite world!"""
-        wall_height = 2.0
-        wall_thickness = 0.2
-        
-        # Wall color - dark gray
-        wall_color = [0.4, 0.4, 0.4, 1]
-        
-        # Four walls
+        wall_h = 2.0
+        w_thick = 0.2
+        gray = [0.4, 0.4, 0.4, 1]
+
         walls = [
-            # North wall (top)
-            ([self.grid_size/2, self.grid_size + wall_thickness/2, wall_height/2],
-             [self.grid_size/2 + wall_thickness, wall_thickness/2, wall_height/2]),
-            
-            # South wall (bottom)
-            ([self.grid_size/2, -wall_thickness/2, wall_height/2],
-             [self.grid_size/2 + wall_thickness, wall_thickness/2, wall_height/2]),
-            
-            # East wall (right)
-            ([self.grid_size + wall_thickness/2, self.grid_size/2, wall_height/2],
-             [wall_thickness/2, self.grid_size/2 + wall_thickness, wall_height/2]),
-            
-            # West wall (left)
-            ([-wall_thickness/2, self.grid_size/2, wall_height/2],
-             [wall_thickness/2, self.grid_size/2 + wall_thickness, wall_height/2]),
+            # NORTH
+            ([self.grid_size / 2, self.grid_size + w_thick / 2, wall_h / 2],
+             [self.grid_size / 2 + w_thick, w_thick / 2, wall_h / 2]),
+            # SOUTH
+            ([self.grid_size / 2, -w_thick / 2, wall_h / 2],
+             [self.grid_size / 2 + w_thick, w_thick / 2, wall_h / 2]),
+            # EAST
+            ([self.grid_size + w_thick / 2, self.grid_size / 2, wall_h / 2],
+             [w_thick / 2, self.grid_size / 2 + w_thick, wall_h / 2]),
+            # WEST
+            ([-w_thick / 2, self.grid_size / 2, wall_h / 2],
+             [w_thick / 2, self.grid_size / 2 + w_thick, wall_h / 2]),
         ]
-        
-        for position, half_extents in walls:
-            collision = p.createCollisionShape(
-                p.GEOM_BOX,
-                halfExtents=half_extents
+
+        for pos, halfext in walls:
+            col = p.createCollisionShape(p.GEOM_BOX, halfExtents=halfext)
+            vis = p.createVisualShape(
+                p.GEOM_BOX, halfExtents=halfext, rgbaColor=gray
             )
-            visual = p.createVisualShape(
-                p.GEOM_BOX,
-                halfExtents=half_extents,
-                rgbaColor=wall_color
-            )
-            
-            wall_id = p.createMultiBody(
+            wall = p.createMultiBody(
                 baseMass=0,
-                baseCollisionShapeIndex=collision,
-                baseVisualShapeIndex=visual,
-                basePosition=position
+                baseCollisionShapeIndex=col,
+                baseVisualShapeIndex=vis,
+                basePosition=pos,
             )
-            
-            p.changeDynamics(wall_id, -1, lateralFriction=1.0)
-            self.wall_ids.append(wall_id)
-    
-    def _create_robot(self, position):
-        """Create simple robot - like Pioneer mobile robot"""
-        # Robot dimensions (compact mobile robot)
-        robot_radius = 0.25
-        robot_height = 0.2
-        
-        # Base
-        base_collision = p.createCollisionShape(
+            self.wall_ids.append(wall)
+
+    # ------------------------------------------------------------
+    # ROAD SYSTEMS
+    # ------------------------------------------------------------
+
+    # ---------------------------
+    # Spiral black road
+    # ---------------------------
+    def _create_spiral_road(self):
+        road_w = 2.0
+        thickness = 0.04
+        black = [0.1, 0.1, 0.1, 1]
+
+        loops = 2.2
+        b = 0.5 # controls spacing between loops, larger = more spaced out
+        a = 1.0
+        num_pts = 200
+
+        theta = np.linspace(0, loops * np.pi * 2, num_pts)
+        r = a + b * theta
+        x = self.grid_size / 2 + r * np.cos(theta)
+        y = self.grid_size / 2 + r * np.sin(theta)
+
+        for i in range(num_pts - 1):
+            p1 = np.array([x[i], y[i]])
+            p2 = np.array([x[i + 1], y[i + 1]])
+
+            mid = (p1 + p2) / 2
+            seg_len = np.linalg.norm(p2 - p1)
+            if seg_len < 1e-3:
+                continue
+
+            yaw = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+
+            col = p.createCollisionShape(
+                p.GEOM_BOX, halfExtents=[seg_len / 2, road_w / 2, thickness / 2]
+            )
+            vis = p.createVisualShape(
+                p.GEOM_BOX,
+                halfExtents=[seg_len / 2, road_w / 2, thickness / 2],
+                rgbaColor=black,
+            )
+
+            road_id = p.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=col,
+                baseVisualShapeIndex=vis,
+                basePosition=[mid[0], mid[1], thickness / 2 + 0.01],
+                baseOrientation=p.getQuaternionFromEuler([0, 0, yaw]),
+            )
+            self.road_tile_ids.append(road_id)
+
+    # ---------------------------
+    # Manhattan City Road Grid
+    # ---------------------------
+    def _create_city_block_map(self):
+        road_w = 2.0
+        road_h = 0.05
+        black = [0.07, 0.07, 0.07, 1]
+
+        num_hroads = 3
+        num_vroads = 3
+
+        # evenly space roads
+        h_y = np.linspace(3, self.grid_size - 3, num_hroads)
+        v_x = np.linspace(3, self.grid_size - 3, num_vroads)
+
+        # 1) Create horizontal roads
+        for y in h_y:
+            col = p.createCollisionShape(
+                p.GEOM_BOX,
+                halfExtents=[self.grid_size / 2, road_w / 2, road_h / 2],
+            )
+            vis = p.createVisualShape(
+                p.GEOM_BOX,
+                halfExtents=[self.grid_size / 2, road_w / 2, road_h / 2],
+                rgbaColor=black,
+            )
+            road_id = p.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=col,
+                baseVisualShapeIndex=vis,
+                basePosition=[self.grid_size / 2, y, road_h / 2 + 0.02],
+            )
+            self.road_tile_ids.append(road_id)
+
+        # 2) Vertical roads
+        for x in v_x:
+            col = p.createCollisionShape(
+                p.GEOM_BOX,
+                halfExtents=[road_w / 2, self.grid_size / 2, road_h / 2],
+            )
+            vis = p.createVisualShape(
+                p.GEOM_BOX,
+                halfExtents=[road_w / 2, self.grid_size / 2, road_h / 2],
+                rgbaColor=black,
+            )
+            road_id = p.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=col,
+                baseVisualShapeIndex=vis,
+                basePosition=[x, self.grid_size / 2, road_h / 2 + 0.02],
+            )
+            self.road_tile_ids.append(road_id)
+
+        # 3) Create buildings in the blocks
+        gray = [0.6, 0.6, 0.6, 1]
+
+        # derive intervals between roads
+        h_bounds = [0] + list(h_y) + [self.grid_size]
+        v_bounds = [0] + list(v_x) + [self.grid_size]
+
+        for i in range(len(v_bounds) - 1):
+            for j in range(len(h_bounds) - 1):
+                cx0 = v_bounds[i]
+                cx1 = v_bounds[i + 1]
+                cy0 = h_bounds[j]
+                cy1 = h_bounds[j + 1]
+
+                # Skip space occupied by roads (within road_w margin)
+                if (cx0 < min(v_x) + road_w and cx1 > min(v_x) - road_w):
+                    pass
+                if (cy0 < min(h_y) + road_w and cy1 > min(h_y) - road_w):
+                    pass
+
+                # building center & size
+                bx = (cx0 + cx1) / 2
+                by = (cy0 + cy1) / 2
+                sx = max((cx1 - cx0) / 2 - 1.0, 0.8)
+                sy = max((cy1 - cy0) / 2 - 1.0, 0.8)
+                bh = np.random.uniform(1.5, 4.0)
+
+                col = p.createCollisionShape(
+                    p.GEOM_BOX, halfExtents=[sx, sy, bh / 2]
+                )
+                vis = p.createVisualShape(
+                    p.GEOM_BOX, halfExtents=[sx, sy, bh / 2], rgbaColor=gray
+                )
+                b_id = p.createMultiBody(
+                    baseMass=0,
+                    baseCollisionShapeIndex=col,
+                    baseVisualShapeIndex=vis,
+                    basePosition=[bx, by, bh / 2 + 0.02],
+                )
+                self.building_ids.append(b_id)
+
+    # ------------------------------------------------------------
+    def _create_goal(self, pos):
+        col = p.createCollisionShape(p.GEOM_CYLINDER, radius=0.3, height=0.2)
+        vis = p.createVisualShape(
             p.GEOM_CYLINDER,
-            radius=robot_radius,
-            height=robot_height
+            radius=0.3,
+            length=0.2,
+            rgbaColor=[1.0, 0.6, 0.6, 0.8],
         )
-        base_visual = p.createVisualShape(
-            p.GEOM_CYLINDER,
-            radius=robot_radius,
-            length=robot_height,
-            rgbaColor=[0.8, 0.3, 0.3, 1]  # Red robot
-        )
-        
-        self.robot_id = p.createMultiBody(
-            baseMass=1.0,
-            baseCollisionShapeIndex=base_collision,
-            baseVisualShapeIndex=base_visual,
-            basePosition=[position[0], position[1], robot_height/2 + 0.05]
-        )
-        
-        p.changeDynamics(self.robot_id, -1, lateralFriction=0.8, mass=1.0)
-        
-        # Add direction indicator (front sensor bar)
-        indicator_visual = p.createVisualShape(
-            p.GEOM_BOX,
-            halfExtents=[0.15, 0.05, 0.05],
-            rgbaColor=[0.2, 0.2, 0.2, 1]  # Dark gray
-        )
-        indicator_id = p.createMultiBody(
-            baseMass=0,
-            baseCollisionShapeIndex=-1,
-            baseVisualShapeIndex=indicator_visual,
-            basePosition=[position[0] + robot_radius + 0.1, position[1], robot_height/2 + 0.05]
-        )
-    
-    def _create_goal(self, position):
-        """Create goal marker - glowing circle like in image"""
-        # Goal platform
-        goal_radius = 0.5
-        goal_height = 0.1
-        
-        goal_collision = p.createCollisionShape(
-            p.GEOM_CYLINDER,
-            radius=goal_radius,
-            height=goal_height
-        )
-        goal_visual = p.createVisualShape(
-            p.GEOM_CYLINDER,
-            radius=goal_radius,
-            length=goal_height,
-            rgbaColor=[1.0, 0.6, 0.6, 0.7]  # Light red/pink glow
-        )
-        
         self.goal_id = p.createMultiBody(
             baseMass=0,
-            baseCollisionShapeIndex=-1,  # No collision
-            baseVisualShapeIndex=goal_visual,
-            basePosition=[position[0], position[1], goal_height/2 + 0.05]
+            baseCollisionShapeIndex=col,
+            baseVisualShapeIndex=vis,
+            basePosition=[pos[0], pos[1], 0.15],
         )
-        
-        # Add "GOAL" text visual (small cylinder on top)
-        marker_visual = p.createVisualShape(
-            p.GEOM_CYLINDER,
-            radius=0.1,
-            length=0.5,
-            rgbaColor=[1.0, 0.5, 0.5, 1]
-        )
-        marker_id = p.createMultiBody(
-            baseMass=0,
-            baseCollisionShapeIndex=-1,
-            baseVisualShapeIndex=marker_visual,
-            basePosition=[position[0], position[1], 0.5]
-        )
-    
-    def _create_obstacles(self):
-        """Create box obstacles like in the image"""
-        from map_generators import (
-            RandomObstaclesGenerator, MazeMapGenerator, GridMapGenerator
-        )
-        
-        if self.map_type == 'random':
-            num_obstacles = self.map_kwargs.get('num_obstacles', 5)
-            generator = RandomObstaclesGenerator(self.grid_size, num_obstacles)
-        elif self.map_type == 'maze':
-            cell_size = self.map_kwargs.get('cell_size', 2)
-            generator = MazeMapGenerator(self.grid_size, cell_size=cell_size)
-        elif self.map_type == 'grid':
-            spacing = self.map_kwargs.get('spacing', 3)
-            generator = GridMapGenerator(self.grid_size, spacing=spacing)
-        else:
-            generator = RandomObstaclesGenerator(self.grid_size, 5)
-        
-        obstacles = generator.get_obstacles()
-        
-        # Obstacle colors - various grays like in image
-        obstacle_colors = [
-            [0.5, 0.5, 0.5, 1],
-            [0.6, 0.6, 0.6, 1],
-            [0.45, 0.45, 0.45, 1],
-            [0.55, 0.55, 0.55, 1],
-        ]
-        
-        for i, obs in enumerate(obstacles):
-            pos = obs['pos']
-            size = obs['size']
-            
-            # Random height variation
-            height = np.random.uniform(1.5, 2.5)
-            
-            # Box obstacle
-            collision_shape = p.createCollisionShape(
-                p.GEOM_BOX,
-                halfExtents=[size, size, height/2]
+
+    # ------------------------------------------------------------
+    def _create_obstacles_on_roads(self):
+        # spawn small cylinders along road tiles
+        for _ in range(self.num_obstacles):
+            road_body = np.random.choice(self.road_tile_ids)
+            pos, orn = p.getBasePositionAndOrientation(road_body)
+            # add slight jitter
+            dx = np.random.uniform(-0.5, 0.5)
+            dy = np.random.uniform(-0.5, 0.5)
+            ox = pos[0] + dx
+            oy = pos[1] + dy
+
+            h = 0.3
+            col = p.createCollisionShape(
+                p.GEOM_CYLINDER, radius=0.3, height=h
             )
-            
-            color = obstacle_colors[i % len(obstacle_colors)]
-            visual_shape = p.createVisualShape(
-                p.GEOM_BOX,
-                halfExtents=[size, size, height/2],
-                rgbaColor=color
+            vis = p.createVisualShape(
+                p.GEOM_CYLINDER,
+                radius=0.3,
+                length=h,
+                rgbaColor=[1.0, 0.7, 0.7, 1],
             )
-            
-            obstacle_id = p.createMultiBody(
+            oid = p.createMultiBody(
                 baseMass=0,
-                baseCollisionShapeIndex=collision_shape,
-                baseVisualShapeIndex=visual_shape,
-                basePosition=[pos[0], pos[1], height/2 + 0.05]
+                baseCollisionShapeIndex=col,
+                baseVisualShapeIndex=vis,
+                basePosition=[ox, oy, h / 2],
             )
-            
-            p.changeDynamics(obstacle_id, -1, lateralFriction=1.0)
-            self.obstacle_ids.append(obstacle_id)
-    
-    def _find_free_position(self):
-        """Find free position away from obstacles and walls"""
-        max_attempts = 100
-        min_obstacle_distance = 1.5
-        margin = 1.0  # Stay away from walls
-        
-        for _ in range(max_attempts):
-            pos = np.array([
-                np.random.uniform(margin, self.grid_size - margin),
-                np.random.uniform(margin, self.grid_size - margin)
-            ])
-            
-            is_free = True
-            for obs_id in self.obstacle_ids:
-                obs_pos, _ = p.getBasePositionAndOrientation(obs_id)
-                distance = np.linalg.norm(pos - np.array([obs_pos[0], obs_pos[1]]))
-                if distance < min_obstacle_distance:
-                    is_free = False
-                    break
-            
-            if is_free:
-                return pos
-        
-        return np.array([self.grid_size/2, self.grid_size/2])
-    
+            self.obstacle_ids.append(oid)
+
+    # ------------------------------------------------------------
+    def _position_on_road(self):
+        """Pick random road tile center"""
+        rid = np.random.choice(self.road_tile_ids)
+        pos, _ = p.getBasePositionAndOrientation(rid)
+        return np.array([pos[0], pos[1]])
+
+    # ------------------------------------------------------------
+    def _on_road(self, x, y):
+        """Check if robot is on road by measuring distance to nearest road tile."""
+        for rid in self.road_tile_ids:
+            pos, orn = p.getBasePositionAndOrientation(rid)
+            rp = np.array([pos[0], pos[1]])
+            if np.linalg.norm([x - rp[0], y - rp[1]]) < 1.3:  # near road center
+                return True
+        return False
+
+    # ------------------------------------------------------------
+    # ROBOT
+    # ------------------------------------------------------------
+    def _create_robot(self, pos):
+        # simple box for now
+        col = p.createCollisionShape(
+            p.GEOM_BOX, halfExtents=[0.3, 0.2, 0.15]
+        )
+        vis = p.createVisualShape(
+            p.GEOM_BOX,
+            halfExtents=[0.3, 0.2, 0.15],
+            rgbaColor=[0.9, 0.2, 0.2, 1],
+        )
+        self.robot_id = p.createMultiBody(
+            baseMass=1.0,
+            baseCollisionShapeIndex=col,
+            baseVisualShapeIndex=vis,
+            basePosition=[pos[0], pos[1], 0.2],
+        )
+
+    # ------------------------------------------------------------
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        
+
         self.step_count = 0
-        
-        # Clear existing
-        if self.robot_id is not None:
-            p.removeBody(self.robot_id)
-        if self.goal_id is not None:
-            p.removeBody(self.goal_id)
-        for obs_id in self.obstacle_ids:
-            p.removeBody(obs_id)
+
+        # cleanup
+        for l in [
+            self.robot_id,
+            self.goal_id,
+            *self.road_tile_ids,
+            *self.building_ids,
+            *self.obstacle_ids,
+        ]:
+            if l:
+                try:
+                    p.removeBody(l)
+                except:
+                    pass
+
+        self.robot_id = None
+        self.goal_id = None
+        self.road_tile_ids = []
+        self.building_ids = []
         self.obstacle_ids = []
-        
-        # Create new
-        self._create_obstacles()
-        self.robot_pos = self._find_free_position()
-        self.goal_pos = self._find_free_position()
-        
-        while np.linalg.norm(self.robot_pos - self.goal_pos) < self.grid_size * 0.3:
-            self.goal_pos = self._find_free_position()
-        
-        self._create_robot(self.robot_pos)
-        self._create_goal(self.goal_pos)
-        
-        # Settle physics
-        for _ in range(50):
+
+        # build map
+        if self.map_type == "spiral":
+            self._create_spiral_road()
+        elif self.map_type == "city":
+            self._create_city_block_map()
+        else:
+            raise ValueError("map_type must be 'spiral' or 'city'")
+
+        # obstacles
+        self._create_obstacles_on_roads()
+
+        # pick start + goal
+        robot_pos = self._position_on_road()
+        goal_pos = self._position_on_road()
+        self._create_robot(robot_pos)
+        self._create_goal(goal_pos)
+
+        for _ in range(30):
             p.stepSimulation()
-        
-        return self._get_obs(), self._get_info()
-    
+
+        return self._get_obs(), {}
+
+    # ------------------------------------------------------------
+    def _get_obs(self):
+        pos, orn = p.getBasePositionAndOrientation(self.robot_id)
+        yaw = p.getEulerFromQuaternion(orn)[2]
+        gpos, _ = p.getBasePositionAndOrientation(self.goal_id)
+
+        return np.array(
+            [pos[0], pos[1], yaw, gpos[0], gpos[1]], dtype=np.float32
+        )
+
+    # ------------------------------------------------------------
     def step(self, action):
         self.step_count += 1
-        
-        # Get current state
         pos, orn = p.getBasePositionAndOrientation(self.robot_id)
-        euler = p.getEulerFromQuaternion(orn)
-        yaw = euler[2]
-        
-        old_distance = np.linalg.norm(
-            np.array([pos[0], pos[1]]) - self.goal_pos
-        )
-        
-        # Calculate velocities
-        if action == 0:  # Forward
-            linear_vel_x = self.linear_speed * np.cos(yaw)
-            linear_vel_y = self.linear_speed * np.sin(yaw)
-            angular_vel = 0
-        elif action == 1:  # Turn left
-            linear_vel_x = 0
-            linear_vel_y = 0
-            angular_vel = self.angular_speed
-        elif action == 2:  # Turn right
-            linear_vel_x = 0
-            linear_vel_y = 0
-            angular_vel = -self.angular_speed
-        else:  # Backward
-            linear_vel_x = -self.linear_speed * 0.5 * np.cos(yaw)
-            linear_vel_y = -self.linear_speed * 0.5 * np.sin(yaw)
-            angular_vel = 0
-        
-        # Apply velocities
+        yaw = p.getEulerFromQuaternion(orn)[2]
+
+        old_dist = self._goal_dist()
+
+        # compute velocities
+        if action == 0:
+            vx = self.linear_speed * np.cos(yaw)
+            vy = self.linear_speed * np.sin(yaw)
+            wz = 0
+        elif action == 1:
+            vx = vy = 0
+            wz = self.angular_speed
+        elif action == 2:
+            vx = vy = 0
+            wz = -self.angular_speed
+        else:
+            vx = -0.5 * self.linear_speed * np.cos(yaw)
+            vy = -0.5 * self.linear_speed * np.sin(yaw)
+            wz = 0
+
         p.resetBaseVelocity(
-            self.robot_id,
-            linearVelocity=[linear_vel_x, linear_vel_y, 0],
-            angularVelocity=[0, 0, angular_vel]
+            self.robot_id, linearVelocity=[vx, vy, 0], angularVelocity=[0, 0, wz]
         )
-        
-        # Step simulation
+
         for _ in range(10):
             p.stepSimulation()
-            if self.render_mode == 'human':
-                time.sleep(1./240.)
-        
-        # Get new state
-        pos, orn = p.getBasePositionAndOrientation(self.robot_id)
-        euler = p.getEulerFromQuaternion(orn)
-        
-        self.robot_pos = np.array([pos[0], pos[1]])
-        new_distance = np.linalg.norm(self.robot_pos - self.goal_pos)
-        
-        # Check collision with obstacles OR walls
-        collision = self._check_collision()
-        
-        # Calculate reward
-        reward = self._calculate_reward(collision, old_distance, new_distance)
-        
-        # Check termination
-        terminated = new_distance < 0.6
-        
-        # Check truncation (timeout only - walls handle out of bounds)
-        truncated = self.step_count >= self.max_steps
-        
-        if collision:
-            reward = -50  # Heavy penalty for hitting walls/obstacles
-            truncated = True  # End episode on collision
-        
-        return self._get_obs(), reward, terminated, truncated, self._get_info()
-    
-    def _get_obs(self):
-        """Get observation"""
-        pos, orn = p.getBasePositionAndOrientation(self.robot_id)
-        euler = p.getEulerFromQuaternion(orn)
-        yaw = euler[2]
-        
-        return np.array([
-            pos[0], pos[1], yaw,
-            self.goal_pos[0], self.goal_pos[1]
-        ], dtype=np.float32)
-    
-    def _get_info(self):
-        """Get info"""
+            if self.render_mode == "human":
+                time.sleep(1 / 240)
+
+        # new state
         pos, _ = p.getBasePositionAndOrientation(self.robot_id)
-        distance = np.linalg.norm(
-            np.array([pos[0], pos[1]]) - self.goal_pos
-        )
-        
-        return {
-            'distance_to_goal': distance,
-            'step_count': self.step_count,
-            'map_type': self.map_type
-        }
-    
-    def _check_collision(self):
-        """Check collision with obstacles or walls"""
-        contact_points = p.getContactPoints(bodyA=self.robot_id)
-        
-        for contact in contact_points:
-            # Check if hit obstacle or wall
-            if contact[2] in self.obstacle_ids or contact[2] in self.wall_ids:
+        new_dist = self._goal_dist()
+
+        # reward
+        reward = (old_dist - new_dist) * 5.0 - 0.05
+
+        # off-road penalty
+        if not self._on_road(pos[0], pos[1]):
+            reward -= 50
+            return self._get_obs(), reward, True, False, {}
+
+        # collision penalty
+        if self._robot_collision():
+            reward -= 30
+            return self._get_obs(), reward, True, False, {}
+
+        # reaching goal
+        if new_dist < 0.6:
+            reward += 100
+            return self._get_obs(), reward, True, False, {}
+
+        truncated = self.step_count >= self.max_steps
+
+        return self._get_obs(), reward, False, truncated, {}
+
+    # ------------------------------------------------------------
+    def _robot_collision(self):
+        contacts = p.getContactPoints(self.robot_id)
+        for c in contacts:
+            if c[2] in self.building_ids or c[2] in self.obstacle_ids:
                 return True
-        
         return False
-    
-    def _calculate_reward(self, collision, old_distance, new_distance):
-        """Calculate reward"""
-        if new_distance < 0.6:
-            return 100.0
-        
-        if collision:
-            return -50.0
-        
-        progress = old_distance - new_distance
-        distance_reward = progress * 10.0
-        
-        if new_distance < 5.0:
-            proximity_bonus = (5.0 - new_distance) * 2.0
-        else:
-            proximity_bonus = 0
-        
-        time_penalty = -0.1
-        
-        return time_penalty + distance_reward + proximity_bonus
-    
-    def render(self):
-        """Render handled by PyBullet"""
-        pass
-    
+
+    # ------------------------------------------------------------
+    def _goal_dist(self):
+        pos, _ = p.getBasePositionAndOrientation(self.robot_id)
+        gpos, _ = p.getBasePositionAndOrientation(self.goal_id)
+        return np.linalg.norm([pos[0] - gpos[0], pos[1] - gpos[1]])
+
+    # ------------------------------------------------------------
     def close(self):
-        """Close PyBullet"""
         if self.physics_client is not None:
             p.disconnect(self.physics_client)
             self.physics_client = None
 
 
-# Test the grid environment
+# =========================================================
+# Test
+# =========================================================
 if __name__ == "__main__":
-    print("\n" + "="*70)
-    print("Clean Grid-Based Bounded Environment")
-    print("="*70)
-    print("\n✨ Features:")
-    print("  🔲 Visible grid tiles")
-    print("  🧱 Boundary walls - finite world!")
-    print("  🤖 Mobile robot (red cylinder)")
-    print("  📦 Box obstacles (gray)")
-    print("  🎯 Goal marker (pink glow)")
-    print("\nThe world has clear boundaries - robot can't go beyond walls!\n")
-    
     env = GridBoundedEnv(
-        grid_size=20,
-        map_type='random',
-        render_mode='human',
-        num_obstacles=5
+        grid_size=25,
+        map_type="spiral",   # try "spiral" or "city"
+        render_mode="human",
+        num_obstacles=5,
     )
-    
+
     obs, info = env.reset()
-    print(f"Start: ({obs[0]:.2f}, {obs[1]:.2f})")
-    print(f"Goal:  ({obs[3]:.2f}, {obs[4]:.2f})")
-    print(f"Distance: {info['distance_to_goal']:.2f}m\n")
-    
-    episode = 1
-    for i in range(500):
-        action = env.action_space.sample()
-        obs, reward, terminated, truncated, info = env.step(action)
-        
-        if i % 30 == 0:
-            action_names = ["Forward", "Turn Left", "Turn Right", "Reverse"]
-            print(f"Step {i}: {action_names[action]}, Distance={info['distance_to_goal']:.2f}m")
-        
-        if terminated:
-            print(f"\n✅ Goal reached in {info['step_count']} steps!\n")
-            episode += 1
-            obs, info = env.reset()
-        
-        if truncated:
-            print(f"\n❌ Episode {episode} ended (collision or timeout)\n")
-            episode += 1
-            obs, info = env.reset()
-    
-    env.close()
-    print("\n" + "="*70)
-    print("Clean, bounded world - just like the Pioneer robot image!")
-    print("="*70)
+    for _ in range(2000):
+        a = env.action_space.sample()
+        obs, reward, done, trunc, info = env.step(a)
+        if done or trunc:
+            obs, _ = env.reset()
