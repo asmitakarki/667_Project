@@ -12,7 +12,7 @@ from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 import time
 import os
-    import torch
+import torch
 
 from robot_pov_env import RobotPOVEnv
 from robot_pov_env import RobotPOVContinuousEnv
