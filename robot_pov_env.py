@@ -52,6 +52,9 @@ class RobotPOVEnv(gym.Env):
         self.building_ids = []
         self.obstacle_ids = []
         self.wall_ids = []
+        self.goal_extra_ids = []      # <- pole + flag
+        self.lane_marker_ids = []     # <- optional, for cleanup
+
         
         self.linear_speed = 2.5
         self.angular_speed = 2.0
@@ -222,6 +225,13 @@ class RobotPOVEnv(gym.Env):
                     baseVisualShapeIndex=vis,
                     basePosition=[x, y, z],
                 )
+                lm_id = p.createMultiBody(
+                    baseMass=0,
+                    baseCollisionShapeIndex=col,
+                    baseVisualShapeIndex=vis,
+                    basePosition=[x, y, z],
+                )
+                self.lane_marker_ids.append(lm_id)
 
         # Vertical roads: vary y, fixed x
         for x in v_x:
@@ -241,6 +251,13 @@ class RobotPOVEnv(gym.Env):
                     baseVisualShapeIndex=vis,
                     basePosition=[x, y, z],
                 )
+                lm_id = p.createMultiBody(
+                    baseMass=0,
+                    baseCollisionShapeIndex=col,
+                    baseVisualShapeIndex=vis,
+                    basePosition=[x, y, z],
+                )
+                self.lane_marker_ids.append(lm_id) 
 
     def _create_robot(self, pos):
         """Create robot"""
@@ -266,16 +283,18 @@ class RobotPOVEnv(gym.Env):
         # Tall flag pole
         pole_vis = p.createVisualShape(
             p.GEOM_CYLINDER, radius=0.06, length=3.0,
-            rgbaColor=[1, 1, 0, 1]  # YELLOW pole
+            rgbaColor=[1, 1, 0, 1]
         )
-        p.createMultiBody(0, -1, pole_vis, [pos[0], pos[1], 1.5])
-        
+        pole_id = p.createMultiBody(0, -1, pole_vis, [pos[0], pos[1], 1.5])
+        self.goal_extra_ids.append(pole_id)
+
         # Flag at top
         flag_vis = p.createVisualShape(
             p.GEOM_BOX, halfExtents=[0.4, 0.02, 0.3],
-            rgbaColor=[1, 0, 0, 1]  # blue flag
+            rgbaColor=[1, 0, 0, 1]
         )
-        p.createMultiBody(0, -1, flag_vis, [pos[0] + 0.2, pos[1], 2.7])
+        flag_id = p.createMultiBody(0, -1, flag_vis, [pos[0] + 0.2, pos[1], 2.7])
+        self.goal_extra_ids.append(flag_id)
     
     def _create_obstacles(self):
         """Create BRIGHT orange traffic cones"""
@@ -352,37 +371,52 @@ class RobotPOVEnv(gym.Env):
         self.step_count = 0
         
         # Cleanup
-        for obj_id in [self.robot_id, self.goal_id, *self.road_tile_ids,
-                       *self.building_ids, *self.obstacle_ids]:
-            if obj_id:
+        for obj_id in [
+            self.robot_id,
+            self.goal_id,
+            *self.goal_extra_ids,
+            *self.road_tile_ids,
+            *self.building_ids,
+            *self.obstacle_ids,
+            *self.lane_marker_ids,
+        ]:
+            if obj_id is not None:
                 try:
                     p.removeBody(obj_id)
                 except:
                     pass
-        
+
         self.robot_id = None
         self.goal_id = None
+        self.goal_extra_ids = []
         self.road_tile_ids = []
         self.building_ids = []
         self.obstacle_ids = []
+        self.lane_marker_ids = []
+
         
         # Create map
         self._create_city_roads()
         self._create_obstacles()
         
-        # Place robot and goal
         robot_pos = self._position_on_road()
         goal_pos = self._position_on_road()
-        
-        while np.linalg.norm(robot_pos - goal_pos) < self.grid_size * 0.3:
+
+        # Avoid infinite loop: try at most 50 times to get a far goal
+        max_tries = 50
+        min_dist = self.grid_size * 0.3
+        for _ in range(max_tries):
+            if np.linalg.norm(robot_pos - goal_pos) >= min_dist:
+                break
             goal_pos = self._position_on_road()
-        
+        # If we "fail", we just accept the last sampled goal_pos
+
         self._create_robot(robot_pos)
         self._create_goal(goal_pos)
-        
+
         for _ in range(30):
             p.stepSimulation()
-        
+
         return self._get_obs(), {}
     
     def _get_obs(self):
@@ -608,3 +642,59 @@ class RobotPOVEnv(gym.Env):
         if self.physics_client is not None:
             p.disconnect(self.physics_client)
             self.physics_client = None
+
+class RobotPOVContinuousEnv(RobotPOVEnv):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # overwrite action space: [steer, throttle] in [-1, 1]
+        self.action_space = spaces.Box(
+            low=np.array([-1.0, -1.0], dtype=np.float32),
+            high=np.array([1.0, 1.0], dtype=np.float32),
+            dtype=np.float32
+        )
+
+    def step(self, action):
+        # clip to be safe
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        steer = float(action[0])     # -1 left, +1 right
+        throttle = float(action[1])  # -1 reverse, +1 forward
+
+        self.step_count += 1
+
+        pos, orn = p.getBasePositionAndOrientation(self.robot_id)
+        yaw = p.getEulerFromQuaternion(orn)[2]
+        old_dist = self._goal_dist()
+
+        # map to velocities
+        max_lin = self.linear_speed
+        max_ang = self.angular_speed
+
+        vx = max_lin * throttle * np.cos(yaw)
+        vy = max_lin * throttle * np.sin(yaw)
+        wz = max_ang * steer    # positive = turn left, negative = right
+
+        p.resetBaseVelocity(
+            self.robot_id,
+            linearVelocity=[vx, vy, 0],
+            angularVelocity=[0, 0, wz],
+        )
+
+        for _ in range(10):
+            p.stepSimulation()
+            if self.render_mode == "human":
+                time.sleep(1/240)
+
+        new_dist = self._goal_dist()
+        reward = (old_dist - new_dist) * 5.0 - 0.05
+
+        if self.render_mode == "human":
+            self.render()
+
+        if new_dist < 0.8:
+            return self._get_obs(), reward + 100, True, False, {}
+
+        if self._check_collision():
+            return self._get_obs(), reward - 30, True, False, {}
+
+        truncated = self.step_count >= self.max_steps
+        return self._get_obs(), reward, False, truncated, {}

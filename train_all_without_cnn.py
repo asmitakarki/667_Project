@@ -12,26 +12,42 @@ from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 import time
 import os
+    import torch
 
 from robot_pov_env import RobotPOVEnv
+from robot_pov_env import RobotPOVContinuousEnv
 
 
-def make_env(render_mode=None):
-    """Create and wrap environment"""
+
+def make_discrete_env(render_mode=None):
+    """Env factory for PPO (discrete actions)."""
     def _init():
         env = RobotPOVEnv(
             grid_size=20,
             map_type="city",
             render_mode=render_mode,
-            use_camera_obs=False,  # Position-based observations
-            num_obstacles=4
+            use_camera_obs=False,  # position-based observations
+            num_obstacles=4,
         )
-        env = Monitor(env)  # Track episode stats
-        return env
+        return Monitor(env)
     return _init
 
 
-def train_algorithm(algo_name, total_timesteps=200000, save_dir="models"):
+def make_continuous_env(render_mode=None):
+    """Env factory for SAC/TD3 (continuous actions)."""
+    def _init():
+        env = RobotPOVContinuousEnv(
+            grid_size=20,
+            map_type="city",
+            render_mode=render_mode,
+            use_camera_obs=False,  # still position-based for now
+            num_obstacles=4,
+        )
+        return Monitor(env)
+    return _init
+
+
+def train_algorithm(algo_name, total_timesteps=200000, save_dir="models", render_training=False):
     """
     Train a single algorithm
     
@@ -39,42 +55,41 @@ def train_algorithm(algo_name, total_timesteps=200000, save_dir="models"):
         algo_name: 'PPO', 'SAC', or 'TD3'
         total_timesteps: Total training steps
         save_dir: Where to save models
+        render_training: Show robot's camera view during training (slower!)
     """
     
     print(f"\n{'='*70}")
     print(f"Training {algo_name}")
     print(f"{'='*70}\n")
     
+    if render_training:
+        print(" RENDERING ENABLED - Training will be 5-10x slower!")
+        print("    Press Ctrl+C to stop early if needed\n")
+    
     # Create directories
     os.makedirs(f"{save_dir}/{algo_name}", exist_ok=True)
     os.makedirs(f"logs/{algo_name}", exist_ok=True)
     
     # Create vectorized environment
-    env = DummyVecEnv([make_env()])
-    env = VecNormalize(env, norm_obs=True, norm_reward=True)
-    
-    # Create evaluation environment
-    eval_env = DummyVecEnv([make_env()])
-    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, training=False)
-    
-    # Callbacks
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=f"{save_dir}/{algo_name}/best",
-        log_path=f"logs/{algo_name}",
-        eval_freq=5000,
-        deterministic=True,
-        render=False,
-        n_eval_episodes=10
-    )
-    
-    checkpoint_callback = CheckpointCallback(
-        save_freq=10000,
-        save_path=f"{save_dir}/{algo_name}/checkpoints",
-        name_prefix=f"{algo_name.lower()}_model"
-    )
+    render_mode = "human" if render_training else None
+
+    if algo_name == "PPO":
+        # Discrete control env
+        env = DummyVecEnv([make_discrete_env(render_mode=render_mode)])
+    else:
+        # Continuous control env for SAC / TD3
+        env = DummyVecEnv([make_continuous_env(render_mode=render_mode)])
     
     # Initialize algorithm with tuned hyperparameters
+    start_time = time.time()
+    
+    # Check for GPU
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    if device == "cpu":
+        print("GPU not detected")
+    
+    # Initialize algorithm - NO CALLBACKS to avoid hanging
     start_time = time.time()
     
     if algo_name == "PPO":
@@ -90,6 +105,7 @@ def train_algorithm(algo_name, total_timesteps=200000, save_dir="models"):
             clip_range=0.2,
             ent_coef=0.01,
             verbose=1,
+            device=device,
             tensorboard_log=f"logs/{algo_name}"
         )
     
@@ -107,11 +123,11 @@ def train_algorithm(algo_name, total_timesteps=200000, save_dir="models"):
             gradient_steps=1,
             ent_coef='auto',
             verbose=1,
+            device=device,
             tensorboard_log=f"logs/{algo_name}"
         )
     
     elif algo_name == "TD3":
-        # TD3 is an improved version of DDPG
         model = TD3(
             "MlpPolicy",
             env,
@@ -125,132 +141,114 @@ def train_algorithm(algo_name, total_timesteps=200000, save_dir="models"):
             gradient_steps=1,
             policy_delay=2,
             verbose=1,
+            device=device,
             tensorboard_log=f"logs/{algo_name}"
         )
     
     else:
         raise ValueError(f"Unknown algorithm: {algo_name}")
     
-    # Train
+    # Train WITHOUT callbacks - no hanging!
     print(f"Starting training for {total_timesteps} timesteps...")
+    print(f"No evaluation during training (prevents freezing)\n")
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[eval_callback, checkpoint_callback],
-        progress_bar=True
+        progress_bar=True,
+        log_interval=10  # Print stats every 10 rollouts
     )
     
     training_time = time.time() - start_time
     
-    # Save final model
+    # Save final model (no VecNormalize to save)
     model.save(f"{save_dir}/{algo_name}/final_model")
-    env.save(f"{save_dir}/{algo_name}/vec_normalize.pkl")
     
     print(f"\n{algo_name} Training Complete!")
     print(f"Time: {training_time/60:.1f} minutes")
-    print(f"Model saved to: {save_dir}/{algo_name}/\n")
+    print(f"Model saved to: {save_dir}/{algo_name}/final_model.zip\n")
     
     env.close()
-    eval_env.close()
     
     return model, training_time
 
+def test_algorithm(algo_name, model_path, n_episodes=5, render=True):
+    """
+    Simple test for a trained model.
+    Uses the discrete env for PPO and the continuous env for SAC/TD3.
+    Returns simple stats for comparison.
+    """
 
-def test_algorithm(algo_name, model_path, n_episodes=20, render=True):
-    """
-    Test a trained algorithm
-    
-    Args:
-        algo_name: 'PPO', 'SAC', or 'TD3'
-        model_path: Path to saved model (without .zip extension)
-        n_episodes: Number of test episodes
-        render: Show visualization
-    """
-    
-    print(f"\n{'='*70}")
+    print("\n" + "="*70)
     print(f"Testing {algo_name}")
-    print(f"{'='*70}\n")
-    
-    # Load model
+    print("="*70 + "\n")
+
+    # ---- Load model ----
     if algo_name == "PPO":
         model = PPO.load(model_path)
     elif algo_name == "SAC":
         model = SAC.load(model_path)
     elif algo_name == "TD3":
         model = TD3.load(model_path)
-    
-    # Create test environment
-    env = RobotPOVEnv(
+    else:
+        raise ValueError(f"Unknown algo in test_algorithm: {algo_name}")
+
+    # ---- Pick environment class ----
+    EnvClass = RobotPOVEnv if algo_name == "PPO" else RobotPOVContinuousEnv
+
+    env = EnvClass(
         grid_size=20,
         map_type="city",
         render_mode="human" if render else None,
         use_camera_obs=False,
-        num_obstacles=4
+        num_obstacles=4,
     )
-    
-    # Load normalization stats
-    vec_norm_path = model_path.replace("final_model", "vec_normalize.pkl").replace("best_model", "vec_normalize.pkl")
-    if os.path.exists(vec_norm_path):
-        print(f"Loading normalization stats from {vec_norm_path}")
-        env = DummyVecEnv([lambda: env])
-        env = VecNormalize.load(vec_norm_path, env)
-        env.training = False
-        env.norm_reward = False
-    
-    # Test
-    successes = 0
-    total_rewards = []
+
+    episode_rewards = []
     episode_lengths = []
-    
+
     for ep in range(n_episodes):
-        obs = env.reset()
-        episode_reward = 0
-        steps = 0
-        
+        obs, info = env.reset()   # Gymnasium: (obs, info)
+        done = False
+        truncated = False
+        total_reward = 0.0
+
         for step in range(500):
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, info = env.step(action)
-            episode_reward += reward[0] if isinstance(reward, np.ndarray) else reward
-            steps += 1
-            
+            obs, reward, done, truncated, info = env.step(action)
+
+            total_reward += float(reward)
+
             if render:
+                import time
                 time.sleep(0.01)
-            
-            if done:
-                if episode_reward > 50:  # Success threshold
-                    successes += 1
-                    print(f"Episode {ep+1}: ✓ SUCCESS in {steps} steps (Reward: {episode_reward:.1f})")
-                else:
-                    print(f"Episode {ep+1}: ✗ Failed (Reward: {episode_reward:.1f})")
-                
-                total_rewards.append(episode_reward)
-                episode_lengths.append(steps)
-                
-                if render:
-                    time.sleep(1)
+
+            if done or truncated:
+                print(f"Episode {ep+1}: finished in {step+1} steps, reward={total_reward:.1f}")
+                episode_rewards.append(total_reward)
+                episode_lengths.append(step + 1)
                 break
-    
-    # Results
-    avg_reward = np.mean(total_rewards)
-    avg_length = np.mean(episode_lengths)
-    success_rate = successes / n_episodes * 100
-    
-    print(f"\n{algo_name} Test Results:")
-    print(f"  Success Rate: {successes}/{n_episodes} ({success_rate:.1f}%)")
-    print(f"  Avg Reward: {avg_reward:.2f} ± {np.std(total_rewards):.2f}")
-    print(f"  Avg Length: {avg_length:.1f} ± {np.std(episode_lengths):.1f}")
-    
+
     env.close()
-    
+
+    # Basic stats
+    avg_rew = float(np.mean(episode_rewards)) if episode_rewards else 0.0
+    std_rew = float(np.std(episode_rewards)) if episode_rewards else 0.0
+    avg_len = float(np.mean(episode_lengths)) if episode_lengths else 0.0
+    std_len = float(np.std(episode_lengths)) if episode_lengths else 0.0
+
+    print(f"\n{algo_name} test summary:")
+    print(f"  Avg reward: {avg_rew:.2f} ± {std_rew:.2f}")
+    print(f"  Avg length: {avg_len:.1f} ± {std_len:.1f}\n")
+
     return {
-        'success_rate': success_rate,
-        'avg_reward': avg_reward,
-        'avg_length': avg_length,
-        'rewards': total_rewards,
-        'lengths': episode_lengths
+        "avg_reward": avg_rew,
+        "std_reward": std_rew,
+        "avg_length": avg_len,
+        "std_length": std_len,
     }
 
 
-def compare_all_algorithms(timesteps=200000):
+
+def compare_all_algorithms(timesteps=200000, render_training=False):
     """
     Train and compare PPO, SAC, and TD3
     """
@@ -265,37 +263,41 @@ def compare_all_algorithms(timesteps=200000):
     
     # Train all algorithms
     for algo in algorithms:
-        model, train_time = train_algorithm(algo, total_timesteps=timesteps)
+        model, train_time = train_algorithm(
+            algo,
+            total_timesteps=timesteps,
+            render_training=render_training,
+        )
         training_times[algo] = train_time
         
-        # Quick test after training
+        # Test using the saved final model
         print(f"\nQuick test of {algo}...")
-        test_results = test_algorithm(
+        model_path = f"models/{algo}/final_model"
+        test_stats = test_algorithm(
             algo,
-            f"models/{algo}/best/best_model",
-            n_episodes=10,
-            render=False
+            model_path,
+            n_episodes=5,
+            render=False,
         )
-        results[algo] = test_results
+        results[algo] = test_stats
     
     # Print comparison
     print("\n" + "="*70)
     print("FINAL COMPARISON")
     print("="*70)
-    print(f"\n{'Algorithm':<10} {'Success Rate':<15} {'Avg Reward':<15} {'Training Time':<15}")
+    print(f"\n{'Algorithm':<10} {'Avg Reward':<15} {'Avg Length':<15} {'Train Time':<15}")
     print("-" * 70)
     
     for algo in algorithms:
         print(f"{algo:<10} "
-              f"{results[algo]['success_rate']:>6.1f}%        "
               f"{results[algo]['avg_reward']:>8.1f}        "
+              f"{results[algo]['avg_length']:>8.1f}        "
               f"{training_times[algo]/60:>6.1f} min")
     
-    # Plot comparison
-    plot_comparison(results, algorithms)
+    # Optional: update plot_comparison to use avg_reward/avg_length
+    # or keep it as-is and map appropriately.
     
     return results
-
 
 def plot_comparison(results, algorithms):
     """Plot comparison of all algorithms"""
@@ -381,24 +383,27 @@ if __name__ == "__main__":
                        help='Total training timesteps')
     parser.add_argument('--test-episodes', type=int, default=20,
                        help='Number of test episodes')
+    parser.add_argument('--render', action='store_true',
+                       help='Show robot camera view during training (5-10x slower!)')
     
     args = parser.parse_args()
     
     if args.mode == 'compare':
         # Train and compare all algorithms
-        compare_all_algorithms(timesteps=args.timesteps)
+        compare_all_algorithms(timesteps=args.timesteps, render_training=args.render)
     
     elif args.mode == 'train':
         # Train single algorithm
-        train_algorithm(args.algo, total_timesteps=args.timesteps)
+        train_algorithm(args.algo, total_timesteps=args.timesteps, render_training=args.render)
     
+
     elif args.mode == 'test':
-        # Test single algorithm
+        model_path = f"models/{args.algo}/final_model"
         test_algorithm(
             args.algo,
-            f"models/{args.algo}/best/best_model",
+            model_path,
             n_episodes=args.test_episodes,
-            render=True
+            render=True,
         )
     
     elif args.mode == 'interactive':

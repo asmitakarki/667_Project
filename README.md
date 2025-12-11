@@ -60,7 +60,7 @@ python train_all_without_cnn.py --mode compare --timesteps 200000
 python train_all_without_cnn.py --mode train --algo PPO --timesteps 200000
 
 # Train SAC
-python train_all_without_cnn.py --mode train --algo SAC --timesteps 200000
+python train_all_without_cnn.py --mode train --algo SAC --timesteps 2000
 
 # Train TD3
 python train_all_without_cnn.py --mode train --algo TD3 --timesteps 200000
@@ -69,10 +69,10 @@ python train_all_without_cnn.py --mode train --algo TD3 --timesteps 200000
 ### 4. Test Trained Model
 ```bash
 # Test PPO (shows robot's camera view)
-python train_all_without_cnn.py --mode test --algo PPO --test-episodes 5
+python train.py --mode test --algo PPO --test-episodes 5
 
 # Test SAC
-python train_all_without_cnn.py --mode test --algo SAC --test-episodes 5
+python train.py --mode test --algo SAC --test-episodes 5
 
 # Test TD3
 python train_all_without_cnn.py --mode test --algo TD3 --test-episodes 5
