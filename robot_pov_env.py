@@ -3,7 +3,6 @@ First-Person POV Camera Environment
 The PyBullet window shows what the ROBOT SEES through its camera
 Like a video game FPS view
 """
-
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -75,7 +74,7 @@ class RobotPOVEnv(gym.Env):
                 high=np.array([grid_size, grid_size, np.pi, grid_size, grid_size], dtype=np.float32),
             )
         
-        self.max_steps = grid_size * 15
+        self.max_steps = grid_size * 10 # changed from 15
         self.step_count = 0
         
         self._init_pybullet()
@@ -296,25 +295,113 @@ class RobotPOVEnv(gym.Env):
         flag_id = p.createMultiBody(0, -1, flag_vis, [pos[0] + 0.2, pos[1], 2.7])
         self.goal_extra_ids.append(flag_id)
     
+    def _create_cone_shape(self, radius, height, num_base_points=16):
+        """
+        Creates a cone by providing vertices. 
+        Uses GEOM_MESH for collision and visual shapes.
+        """
+        vertices = []
+        # 1. Generate vertices for the base circle
+        for i in range(num_base_points):
+            angle = 2 * np.pi * i / num_base_points
+            vertices.append([radius * np.cos(angle), radius * np.sin(angle), 0])
+        
+        # 2. Add the apex point
+        vertices.append([0, 0, height])
+        
+        # Create the indices for the faces (Required for GEOM_MESH visual)
+        indices = []
+        # Base faces (triangle fan)
+        for i in range(1, num_base_points - 1):
+            indices.extend([0, i, i + 1])
+        # Side faces (connecting base to apex)
+        apex_idx = num_base_points
+        for i in range(num_base_points):
+            indices.extend([i, (i + 1) % num_base_points, apex_idx])
+
+        # Collision shape works fine with just vertices
+        col = p.createCollisionShape(shapeType=p.GEOM_MESH, vertices=vertices)
+        
+        # Visual shape is pickier; we provide vertices AND indices
+        vis = p.createVisualShape(
+            shapeType=p.GEOM_MESH, 
+            vertices=vertices, 
+            indices=indices,
+            rgbaColor=[1.0, 0.5, 0.0, 1]
+        )
+        
+        return col, vis
+
     def _create_obstacles(self):
-        """Create BRIGHT orange traffic cones"""
+        """Create BRIGHT orange traffic cones with properly aligned white stripes"""
+        
+        # 1. Base Cone Geometry
+        h = 0.4
+        r = 0.15
+        col_id, vis_id = self._create_cone_shape(r, h)
+        
+        # 2. Define two white stripes with different radii to match cone taper
+        # At height 0.1 (25% up), radius is ~r * 0.75
+        stripe_low_vis = p.createVisualShape(
+            p.GEOM_CYLINDER, radius=r * 0.75, length=0.05, rgbaColor=[1, 1, 1, 1]
+        )
+        # At height 0.25 (62% up), radius is ~r * 0.38
+        stripe_high_vis = p.createVisualShape(
+            p.GEOM_CYLINDER, radius=r * 0.4, length=0.04, rgbaColor=[1, 1, 1, 1]
+        )
+        
+        # PyBullet cylinders are Z-axis aligned by default, but we need to ensure 
+        # they aren't rotated relative to our vertical cone.
+        # No rotation needed if using standard GEOM_CYLINDER in modern PyBullet,
+        # but we define the orientation clearly just in case.
+        stripe_orn = [0, 0, 0, 1] 
+
         for _ in range(self.num_obstacles):
             road_id = np.random.choice(self.road_tile_ids)
             pos, _ = p.getBasePositionAndOrientation(road_id)
-            
             ox = pos[0] + np.random.uniform(-1.0, 1.0)
             oy = pos[1] + np.random.uniform(-1.0, 1.0)
+
+            # Multi-link setup
+            # Link 0: Bottom Stripe | Link 1: Top Stripe
+            link_masses = [0.01, 0.01]
+            link_collision_indices = [-1, -1] 
+            link_visual_indices = [stripe_low_vis, stripe_high_vis]
             
-            h = 0.15  # Short cone
-            radius = 0.08
-            col = p.createCollisionShape(p.GEOM_CYLINDER, radius=radius, height=h)
-            vis = p.createVisualShape(
-                p.GEOM_CYLINDER, radius=0.3, length=h,
-                rgbaColor=[1.0, 0.5, 0.0, 1]  # BRIGHT orange
+            # Positions are relative to the base of the cone (0,0,0)
+            link_positions = [[0, 0, 0.12], [0, 0, 0.26]] 
+            link_orientations = [stripe_orn, stripe_orn]
+            
+            # Parent indices: 0 means attached to the 'Base' (the orange cone)
+            link_parent_indices = [0, 0]
+            link_joint_types = [p.JOINT_FIXED, p.JOINT_FIXED]
+            
+            # REQUIRED for MultiBody alignment:
+            link_inertial_pos = [[0, 0, 0], [0, 0, 0]]
+            link_inertial_orn = [[0, 0, 0, 1], [0, 0, 0, 1]]
+            link_joint_axes = [[0, 0, 0], [0, 0, 0]]
+
+            obs_id = p.createMultiBody(
+                baseMass=1.0,
+                baseCollisionShapeIndex=col_id,
+                baseVisualShapeIndex=vis_id,
+                basePosition=[ox, oy, 0.05], # Sit on road
+                linkMasses=link_masses,
+                linkCollisionShapeIndices=link_collision_indices,
+                linkVisualShapeIndices=link_visual_indices,
+                linkPositions=link_positions,
+                linkOrientations=link_orientations,
+                linkInertialFramePositions=link_inertial_pos,
+                linkInertialFrameOrientations=link_inertial_orn,
+                linkParentIndices=link_parent_indices,
+                linkJointTypes=link_joint_types,
+                linkJointAxis=link_joint_axes
             )
-            obs_id = p.createMultiBody(0, col, vis, [ox, oy, h/2])
+            
+            # Optional: increase lateral friction so they don't slide like ice
+            p.changeDynamics(obs_id, -1, lateralFriction=1.0)
             self.obstacle_ids.append(obs_id)
-    
+
     def _get_camera_image(self):
         """Get first-person view from robot's camera"""
         pos, orn = p.getBasePositionAndOrientation(self.robot_id)
@@ -582,17 +669,17 @@ class RobotPOVEnv(gym.Env):
         old_dist = self._goal_dist()
         
         # Apply action
-        if action == 0:
+        if action == 0:  # forward
             vx = self.linear_speed * np.cos(yaw)
             vy = self.linear_speed * np.sin(yaw)
             wz = 0
-        elif action == 1:
+        elif action == 1:  # turn left
             vx = vy = 0
             wz = self.angular_speed
-        elif action == 2:
+        elif action == 2:  # turn right
             vx = vy = 0
             wz = -self.angular_speed
-        else:
+        else:  # reverse
             vx = -0.5 * self.linear_speed * np.cos(yaw)
             vy = -0.5 * self.linear_speed * np.sin(yaw)
             wz = 0
@@ -603,27 +690,44 @@ class RobotPOVEnv(gym.Env):
             angularVelocity=[0, 0, wz]
         )
         
-        for _ in range(10):
+        # Simulate
+        for _ in range(5):
             p.stepSimulation()
+            
+            # Keep robot upright (fix camera tilt)
+            pos, orn = p.getBasePositionAndOrientation(self.robot_id)
+            euler = p.getEulerFromQuaternion(orn)
+            new_orn = p.getQuaternionFromEuler([0, 0, euler[2]])
+            p.resetBasePositionAndOrientation(self.robot_id, pos, new_orn)
+
+            
             if self.render_mode == "human":
                 time.sleep(1/240)
-
         
+        # Calculate reward
         new_dist = self._goal_dist()
-        reward = (old_dist - new_dist) * 5.0 - 0.05
+        distance_reward = (old_dist - new_dist) * 15.0
+        time_penalty = -0.01
+        progress_bonus = 1.0 if (old_dist - new_dist) > 0.01 else 0
+        reward = distance_reward + time_penalty + progress_bonus
         
-        # Render camera view
+        # Render
         if self.render_mode == "human":
             self.render()
         
+        # IMPORTANT: Check collision BEFORE success!
+        if self._check_collision():
+            return self._get_obs(), reward - 20, True, False, {}
+        
+        # Then check success
         if new_dist < 0.8:
             return self._get_obs(), reward + 100, True, False, {}
         
-        if self._check_collision():
-            return self._get_obs(), reward - 30, True, False, {}
-        
+        # Timeout
         truncated = self.step_count >= self.max_steps
         return self._get_obs(), reward, False, truncated, {}
+                
+            
     
     def _check_collision(self):
         contacts = p.getContactPoints(self.robot_id)
