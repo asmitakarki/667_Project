@@ -33,13 +33,14 @@ pip install stable-baselines3[extra]
 pip install gymnasium pybullet matplotlib
 
 pip install tqdm rich
-
+```
 
 ## Project Structure
 ```
 ├── robot_pov_env.py         # robot environment with obstacles
 ├── demo.py                  # visualize the map
-├── train_all_without_cnn.py # Training without CNN for now
+├── train.py                 # Training without CNN for now
+├── test_models.py           # Compare, single, watch modes
 └── models/                  # Saved trained models
 ```
 
@@ -49,39 +50,27 @@ pip install tqdm rich
 ```bash
 python demo.py
 ```
-### 2. Train All Algorithms WITHOUT CNN (Compare PPO, SAC, TD3)
+
+### 2. Train Algorithms
 ```bash
-python train_all_without_cnn.py --mode compare --timesteps 200000
+python train.py --algo PPO --timesteps 200000 --n-envs 4
+python train.py --algo SAC --timesteps 200000 --n-envs 4  
+python train.py --algo TD3 --timesteps 200000 --n-envs 4
 ```
 
-### 3. Train Single Algorithm WITHOUT CNN
+### 3. Test Trained Model
 ```bash
-# Train PPO
-python train_all_without_cnn.py --mode train --algo PPO --timesteps 200000
+# Test all algorithms and generate comparison plots
+python test_models.py --mode compare --episodes 20
 
-# Train SAC
-python train_all_without_cnn.py --mode train --algo SAC --timesteps 2000
+# Test single algorithm
+python test_models.py --mode single --algo PPO --episodes 20
 
-# Train TD3
-python train_all_without_cnn.py --mode train --algo TD3 --timesteps 200000
+# Watch agent perform with visualization
+python test_models.py --mode watch --algo PPO --episodes 5
 ```
 
-### 4. Test Trained Model
-```bash
-# Test PPO (shows robot's camera view)
-python train_all_without_cnn.py  --mode test --algo PPO --test-episodes 5
 
-# Test SAC
-python train_all_without_cnn.py  --mode test --algo SAC --test-episodes 5
-
-# Test TD3
-python train_all_without_cnn.py --mode test --algo TD3 --test-episodes 5
-```
-
-## Files
-
-### true_first_person_env.py - PyBullet environment with first-person camera view
-### train_all_algorithms.py - Main training/testing script for all algorithms
 
 ## Output 
 ### Trained models are saved in:
