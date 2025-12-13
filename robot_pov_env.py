@@ -747,58 +747,66 @@ class RobotPOVEnv(gym.Env):
             p.disconnect(self.physics_client)
             self.physics_client = None
 
-class RobotPOVContinuousEnv(RobotPOVEnv):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # overwrite action space: [steer, throttle] in [-1, 1]
-        self.action_space = spaces.Box(
-            low=np.array([-1.0, -1.0], dtype=np.float32),
-            high=np.array([1.0, 1.0], dtype=np.float32),
-            dtype=np.float32
-        )
+# CRITICAL FIX for RobotPOVContinuousEnv
+# Replace the step() method in your RobotPOVContinuousEnv class
 
-    def step(self, action):
-        # clip to be safe
-        action = np.clip(action, self.action_space.low, self.action_space.high)
-        steer = float(action[0])     # -1 left, +1 right
-        throttle = float(action[1])  # -1 reverse, +1 forward
+def step(self, action):
+    """FIXED step function for SAC/TD3"""
+    # clip to be safe
+    action = np.clip(action, self.action_space.low, self.action_space.high)
+    steer = float(action[0])     # -1 left, +1 right
+    throttle = float(action[1])  # -1 reverse, +1 forward
 
-        self.step_count += 1
+    self.step_count += 1
 
+    pos, orn = p.getBasePositionAndOrientation(self.robot_id)
+    yaw = p.getEulerFromQuaternion(orn)[2]
+    old_dist = self._goal_dist()
+
+    # map to velocities
+    max_lin = self.linear_speed
+    max_ang = self.angular_speed
+
+    vx = max_lin * throttle * np.cos(yaw)
+    vy = max_lin * throttle * np.sin(yaw)
+    wz = max_ang * steer    # positive = turn left, negative = right
+
+    p.resetBaseVelocity(
+        self.robot_id,
+        linearVelocity=[vx, vy, 0],
+        angularVelocity=[0, 0, wz],
+    )
+
+    # FIXED: Reduced from 10 to 5 steps
+    for _ in range(5):
+        p.stepSimulation()
+        
+        # FIXED: Keep robot upright
         pos, orn = p.getBasePositionAndOrientation(self.robot_id)
-        yaw = p.getEulerFromQuaternion(orn)[2]
-        old_dist = self._goal_dist()
-
-        # map to velocities
-        max_lin = self.linear_speed
-        max_ang = self.angular_speed
-
-        vx = max_lin * throttle * np.cos(yaw)
-        vy = max_lin * throttle * np.sin(yaw)
-        wz = max_ang * steer    # positive = turn left, negative = right
-
-        p.resetBaseVelocity(
-            self.robot_id,
-            linearVelocity=[vx, vy, 0],
-            angularVelocity=[0, 0, wz],
-        )
-
-        for _ in range(10):
-            p.stepSimulation()
-            if self.render_mode == "human":
-                time.sleep(1/240)
-
-        new_dist = self._goal_dist()
-        reward = (old_dist - new_dist) * 5.0 - 0.05
-
+        euler = p.getEulerFromQuaternion(orn)
+        new_orn = p.getQuaternionFromEuler([0, 0, euler[2]])
+        p.resetBasePositionAndOrientation(self.robot_id, pos, new_orn)
+        
         if self.render_mode == "human":
-            self.render()
+            time.sleep(1/240)
 
-        if new_dist < 0.8:
-            return self._get_obs(), reward + 100, True, False, {}
+    # FIXED: Improved reward (same as discrete env)
+    new_dist = self._goal_dist()
+    distance_reward = (old_dist - new_dist) * 15.0  # Was 5.0
+    time_penalty = -0.01  # Was -0.05
+    progress_bonus = 1.0 if (old_dist - new_dist) > 0.01 else 0
+    reward = distance_reward + time_penalty + progress_bonus
 
-        if self._check_collision():
-            return self._get_obs(), reward - 30, True, False, {}
+    if self.render_mode == "human":
+        self.render()
 
-        truncated = self.step_count >= self.max_steps
-        return self._get_obs(), reward, False, truncated, {}
+    # FIXED: Check collision FIRST
+    if self._check_collision():
+        return self._get_obs(), reward - 20, True, False, {}  # Was -30
+
+    # Then success
+    if new_dist < 0.8:
+        return self._get_obs(), reward + 100, True, False, {}
+
+    truncated = self.step_count >= self.max_steps
+    return self._get_obs(), reward, False, truncated, {}

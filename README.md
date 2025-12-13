@@ -29,8 +29,8 @@ pip install --upgrade pip
 pip install "numpy<2.0"
 pip install opencv-python==4.10.0.84
 pip install torch torchvision
-pip install stable-baselines3[extra]
-pip install gymnasium pybullet matplotlib
+pip install stable-baselines3[extra] (on lcc pip install --no-cache-dir "stable-baselines3==2.7.1")
+pip install gymnasium pybullet matplotlib (on lcc pip install --no-cache-dir gymnasium pybullet) conda install -c conda-forge matplotlib
 
 pip install tqdm rich
 ```
@@ -53,7 +53,7 @@ python demo.py
 
 ### 2. Train Algorithms
 ```bash
-python train.py --algo PPO --timesteps 200000 --n-envs 4
+python train.py --algo PPO --timesteps 1000000 --n-envs 4
 python train.py --algo SAC --timesteps 200000 --n-envs 4  
 python train.py --algo TD3 --timesteps 200000 --n-envs 4
 ```
