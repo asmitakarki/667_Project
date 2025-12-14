@@ -19,6 +19,3 @@ env/
 
 # Mac
 .DS_Store
-
-# LCC scripts
-ssh.py
