@@ -29,10 +29,8 @@ pip install --upgrade pip
 pip install "numpy<2.0"
 pip install opencv-python==4.10.0.84
 pip install torch torchvision
-pip install stable-baselines3[extra] (on lcc pip install --no-cache-dir "stable-baselines3==2.7.1") (pip install "numpy<2.0" pandas --only-binary :all:
-) (pip install tensorboard)
-pip install gymnasium pybullet matplotlib (on lcc pip install --no-cache-dir gymnasium pybullet) conda install -c conda-forge matplotlib
-
+pip install stable-baselines3[extra] 
+pip install gymnasium pybullet matplotlib 
 pip install tqdm rich
 ```
 
@@ -42,7 +40,9 @@ pip install tqdm rich
 ├── demo.py                  # visualize the map
 ├── train.py                 # Training without CNN for now
 ├── test_models.py           # Compare, single, watch modes
+├── plot_training.py         # script to plot PPO, SAC, and TD3 from csv files      
 └── models/                  # Saved trained models
+├── logs/                    # contains logs for training and csv files used to plot training curves
 ```
 
 ## Quick Start
@@ -54,9 +54,9 @@ python demo.py
 
 ### 2. Train Algorithms
 ```bash
-python train.py --algo PPO --timesteps 1000000 --n-envs 4
-python train.py --algo SAC --timesteps 500000 --n-envs 4  
-python train.py --algo TD3 --timesteps 200000 --n-envs 4
+python train.py --algo PPO --timesteps 2000000 --n-envs 4
+python train.py --algo SAC --timesteps 2000000 --n-envs 4  
+python train.py --algo TD3 --timesteps 2000000 --n-envs 4
 ```
 
 ### 3. Test Trained Model
@@ -68,17 +68,17 @@ python test_models.py --mode compare --episodes 20
 python test_models.py --mode single --algo PPO --episodes 20
 
 # Watch agent perform with visualization
-python test_models.py --mode watch --algo PPO --episodes 5
+python test_models.py --mode watch --algo PPO --episodes 20
 ```
-
 
 
 ## Output 
 ### Trained models are saved in:
 
-### models/PPO/best/best_model.zip
-### models/SAC/best/best_model.zip
-### models/TD3/best/best_model.zip
+### models/PPO/final_model.zip
+### models/SAC/final_model.zip
+### models/TD3/final_model.zip
 
 ### Training logs are saved in logs/ directory.
+### Training curves are saved in graphs/.
 ### Comparison plots are saved as algorithm_comparison.png.
