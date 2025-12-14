@@ -6,18 +6,20 @@ Like a video game FPS view
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-import pybullet as p
 import pybullet_data
 import time
 import math
 import cv2
 
+# Silence PyBullet logging
+import os
+os.environ["PYBULLET_LOGGING_LEVEL"] = "ERROR"
+import pybullet as p
 
 class RobotPOVEnv(gym.Env):
     """
     Environment where the render window shows the robot's camera view
     """
-    
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
     
     def __init__(
@@ -52,11 +54,11 @@ class RobotPOVEnv(gym.Env):
         self.obstacle_ids = []
         self.wall_ids = []
         self.goal_extra_ids = []      # <- pole + flag
-        self.lane_marker_ids = []     # <- optional, for cleanup
+        self.lane_marker_ids = []     # <- for cleanup
 
         
-        self.linear_speed = 2.5
-        self.angular_speed = 2.0
+        self.linear_speed = 3.5 # increased from 2.5
+        self.angular_speed = 2.5 # increased from 2.0
         
         self.action_space = spaces.Discrete(4)
         
@@ -74,7 +76,7 @@ class RobotPOVEnv(gym.Env):
                 high=np.array([grid_size, grid_size, np.pi, grid_size, grid_size], dtype=np.float32),
             )
         
-        self.max_steps = grid_size * 10 # changed from 15
+        self.max_steps = grid_size * 20 # changed from 15, this gives 400 steps
         self.step_count = 0
         
         self._init_pybullet()
@@ -84,7 +86,7 @@ class RobotPOVEnv(gym.Env):
         if self.physics_client is not None:
             p.disconnect(self.physics_client)
         
-        # Always use DIRECT mode - we'll show camera view separately
+        # DIRECT mode - we'll show camera view separately
         self.physics_client = p.connect(p.DIRECT)
         
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -94,7 +96,7 @@ class RobotPOVEnv(gym.Env):
         
         self._create_ground()
         self._create_boundary_walls()
-    
+    '''
     def _create_ground(self):
         """Create ground"""
         plane_shape = p.createCollisionShape(p.GEOM_PLANE)
@@ -104,7 +106,11 @@ class RobotPOVEnv(gym.Env):
         )
         plane_id = p.createMultiBody(0, plane_shape, plane_visual, [0, 0, 0])
         p.changeDynamics(plane_id, -1, lateralFriction=0.8)
-    
+    '''
+    def _create_ground(self):
+        plane_id = p.loadURDF("plane.urdf")
+        p.changeDynamics(plane_id, -1, lateralFriction=0.8)
+
     def _create_boundary_walls(self):
         """Create visible boundary walls"""
         wall_h = 2.0
@@ -199,7 +205,7 @@ class RobotPOVEnv(gym.Env):
                 self.building_ids.append(b_id)
    
     def _add_lane_markers(self, h_y, v_x, road_h):
-        """Add yellow lane dots along the center of each road."""
+        """yellow lane dots along the center of each road."""
         lane_h = 0.03
         dot_half = 0.15
         yellow = [1.0, 1.0, 0.0, 1.0]
@@ -218,12 +224,15 @@ class RobotPOVEnv(gym.Env):
                     halfExtents=[dot_half, 0.03, lane_h / 2],
                     rgbaColor=yellow,
                 )
+                # duplicate code removed
+                '''
                 p.createMultiBody(
                     baseMass=0,
                     baseCollisionShapeIndex=col,
                     baseVisualShapeIndex=vis,
                     basePosition=[x, y, z],
                 )
+                '''
                 lm_id = p.createMultiBody(
                     baseMass=0,
                     baseCollisionShapeIndex=col,
@@ -244,12 +253,14 @@ class RobotPOVEnv(gym.Env):
                     halfExtents=[0.03, dot_half, lane_h / 2],
                     rgbaColor=yellow,
                 )
+                '''
                 p.createMultiBody(
                     baseMass=0,
                     baseCollisionShapeIndex=col,
                     baseVisualShapeIndex=vis,
                     basePosition=[x, y, z],
                 )
+                '''
                 lm_id = p.createMultiBody(
                     baseMass=0,
                     baseCollisionShapeIndex=col,
@@ -350,7 +361,7 @@ class RobotPOVEnv(gym.Env):
             p.GEOM_CYLINDER, radius=r * 0.4, length=0.04, rgbaColor=[1, 1, 1, 1]
         )
         
-        # PyBullet cylinders are Z-axis aligned by default, but we need to ensure 
+        # PyBullet cylinders are Z-axis aligned by default, but we need to make sure 
         # they aren't rotated relative to our vertical cone.
         # No rotation needed if using standard GEOM_CYLINDER in modern PyBullet,
         # but we define the orientation clearly just in case.
@@ -398,7 +409,7 @@ class RobotPOVEnv(gym.Env):
                 linkJointAxis=link_joint_axes
             )
             
-            # Optional: increase lateral friction so they don't slide like ice
+            # increase lateral friction so they don't slide like ice
             p.changeDynamics(obs_id, -1, lateralFriction=1.0)
             self.obstacle_ids.append(obs_id)
 
@@ -453,6 +464,8 @@ class RobotPOVEnv(gym.Env):
         pos, _ = p.getBasePositionAndOrientation(road_id)
         return np.array([pos[0], pos[1]])
     
+    # this reset wasn't working well, causing memory build-up over time
+    '''
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.step_count = 0
@@ -504,6 +517,57 @@ class RobotPOVEnv(gym.Env):
         for _ in range(30):
             p.stepSimulation()
 
+        return self._get_obs(), {}
+    '''
+    # increases training time
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.step_count = 0
+        
+        # disconnect and reconnect PyBullet
+        # This clears everything cleanly without warnings
+        if self.physics_client is not None:
+            try:
+                p.disconnect(self.physics_client)
+            except:
+                pass
+            self.physics_client = None
+        
+        # Clear all tracking lists
+        self.robot_id = None
+        self.goal_id = None
+        self.goal_extra_ids = []
+        self.road_tile_ids = []
+        self.building_ids = []
+        self.obstacle_ids = []
+        self.lane_marker_ids = []
+        self.wall_ids = []
+
+        # Reinitialize fresh
+        self._init_pybullet()
+        
+        # Create new environment
+        self._create_city_roads()
+        self._create_obstacles()
+        
+        robot_pos = self._position_on_road()
+        goal_pos = self._position_on_road()
+        
+        # reasonable distance
+        max_tries = 50
+        min_dist = self.grid_size * 0.3
+        for _ in range(max_tries):
+            if np.linalg.norm(robot_pos - goal_pos) >= min_dist:
+                break
+            goal_pos = self._position_on_road()
+        
+        self._create_robot(robot_pos)
+        self._create_goal(goal_pos)
+        
+        # Settle physics
+        for _ in range(30):
+            p.stepSimulation()
+        
         return self._get_obs(), {}
     
     def _get_obs(self):
@@ -572,7 +636,7 @@ class RobotPOVEnv(gym.Env):
             # so in BGR it's (0, 140, 255) 
             cv2.circle(minimap, (px, py), 3, (0, 140, 255), -1)  # BGR orange-ish
 
-        # --- Robot as a cute red triangle showing direction ---
+        # --- Robot as a red triangle showing direction ---
         if self.robot_id is not None:
             rpos, rorn = p.getBasePositionAndOrientation(self.robot_id)
             rx, ry = rpos[0], rpos[1]
@@ -601,7 +665,7 @@ class RobotPOVEnv(gym.Env):
                 [int(right_x), int(right_y)]
             ])
 
-            # Cute red triangle
+            # red triangle
             cv2.fillConvexPoly(minimap, pts, (0, 0, 255))   # BGR red
             cv2.polylines(minimap, [pts], True, (0, 0, 150), 2)
 
@@ -614,7 +678,7 @@ class RobotPOVEnv(gym.Env):
             cv2.circle(minimap, (gpx, gpy), 6, (0, 255, 0), -1)  # green
             cv2.circle(minimap, (gpx, gpy), 8, (0, 255, 0), 2)
 
-        # simple "path": straight line robot -> goal (you can replace with A* later)
+        # simple "path": straight line robot -> goal
         if self.robot_id is not None and self.goal_id is not None:
             cv2.line(minimap, (rpx, rpy), (gpx, gpy), (255, 0, 255), 1)  # magenta
 
@@ -644,7 +708,6 @@ class RobotPOVEnv(gym.Env):
             cv2.line(img_with_hud, (w//2, h//2 - 20), (w//2, h//2 + 20),
                      (0, 255, 0), 2)
 
-            # minimap stays as you have it (BGR)
             minimap = self._draw_minimap(size=180)
             mh, mw = minimap.shape[:2]
             if mh + 10 < h and mw + 10 < w:
@@ -654,7 +717,7 @@ class RobotPOVEnv(gym.Env):
                 x0 = x1 - mw
                 img_with_hud[y0:y1, x0:x1] = minimap
 
-            # no extra color conversion now
+            # no extra color conversion
             cv2.imshow(self.camera_window_name, img_with_hud)
             cv2.waitKey(1)
 
@@ -715,27 +778,48 @@ class RobotPOVEnv(gym.Env):
         if self.render_mode == "human":
             self.render()
         
-        # IMPORTANT: Check collision BEFORE success!
+        '''
+        # Check collision BEFORE success!
         if self._check_collision():
             return self._get_obs(), reward - 20, True, False, {}
         
         # Then check success
         if new_dist < 0.8:
             return self._get_obs(), reward + 100, True, False, {}
-        
+        '''
+        obs = self._get_obs()
+        collided = self._check_collision()
+
+        if collided:
+            return obs, reward - 50, True, False, {"success": False, "collision": True}
+
+        if new_dist < 0.8:
+            return obs, reward + 100, True, False, {"success": True, "collision": False}
+
         # Timeout
         truncated = self.step_count >= self.max_steps
-        return self._get_obs(), reward, False, truncated, {}
-                
-            
+        return obs, reward, False, truncated, {"success": False, "collision": False}
     
+    #def _check_collision(self):
+    #    contacts = p.getContactPoints(self.robot_id)
+    #    for c in contacts:
+    #        if c[2] in self.building_ids or c[2] in self.obstacle_ids:
+    #            return True
+    #    return False
+
+    # FIXED: Corrected collision checking
     def _check_collision(self):
-        contacts = p.getContactPoints(self.robot_id)
+        contacts = p.getContactPoints(bodyA=self.robot_id)
         for c in contacts:
-            if c[2] in self.building_ids or c[2] in self.obstacle_ids:
+            bodyA = c[1]
+            bodyB = c[2]
+            other = bodyB if bodyA == self.robot_id else bodyA
+
+            # count collisions with buildings/obstacles/walls (your choice)
+            if other in self.building_ids or other in self.obstacle_ids or other in self.wall_ids:
                 return True
         return False
-    
+        
     def _goal_dist(self):
         pos, _ = p.getBasePositionAndOrientation(self.robot_id)
         gpos, _ = p.getBasePositionAndOrientation(self.goal_id)
@@ -783,7 +867,7 @@ class RobotPOVContinuousEnv(RobotPOVEnv):
             angularVelocity=[0, 0, wz],
         )
 
-        # FIXED: Reduced from 10 to 5 steps
+        # Reduced from 10 to 5 steps
         for _ in range(5):
             p.stepSimulation()
             
@@ -806,6 +890,7 @@ class RobotPOVContinuousEnv(RobotPOVEnv):
         if self.render_mode == "human":
             self.render()
 
+        '''
         # FIXED: Check collision FIRST
         if self._check_collision():
             return self._get_obs(), reward - 20, True, False, {}  # Was -30
@@ -813,8 +898,19 @@ class RobotPOVContinuousEnv(RobotPOVEnv):
         # Then success
         if new_dist < 0.8:
             return self._get_obs(), reward + 100, True, False, {}
+        '''
+        obs = self._get_obs()
+        collided = self._check_collision()
+
+        if collided:
+            return obs, reward - 50, True, False, {"success": False, "collision": True}
+
+        if new_dist < 0.8:
+            return obs, reward + 100, True, False, {"success": True, "collision": False}
+        
 
         truncated = self.step_count >= self.max_steps
-        return self._get_obs(), reward, False, truncated, {}
+        return obs, reward, False, truncated, {"success": False, "collision": False}
+
 
 
