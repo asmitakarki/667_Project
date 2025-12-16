@@ -1,24 +1,36 @@
 """
-OPTIMIZED training - fixes for slow FPS and poor performance
+OPTIMIZED training - CONTINUOUS actions for all algorithms (PPO, SAC, TD3)
+With improved reward shaping and hyperparameters
 """
 
+import os
+import sys
+import types
+# Create figure module with Figure class
+figure_module = types.ModuleType('figure')
+figure_module.Figure = type('Figure', (), {})
+# Create matplotlib mock
+matplotlib_mock = types.ModuleType('matplotlib')
+matplotlib_mock.use = lambda x: None
+matplotlib_mock.figure = figure_module
+# Register all matplotlib modules
+sys.modules['matplotlib'] = matplotlib_mock
+sys.modules['matplotlib.pyplot'] = types.ModuleType('pyplot')
+sys.modules['matplotlib.figure'] = figure_module
 import gymnasium as gym
 import numpy as np
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback
-
+from stable_baselines3.common.callbacks import EveryNTimesteps
 import time
-import os
 import torch
-
+from robot_pov_env2 import RobotPOVEnv, RobotPOVContinuousEnv
 # for plotting
 import glob
 import pandas as pd
-
-from robot_pov_env2 import RobotPOVEnv, RobotPOVContinuousEnv
 
 """
 OPTIMIZED training - CONTINUOUS actions for all algorithms (PPO, SAC, TD3)
@@ -294,7 +306,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.mode == 'train':
-        print(f"\nTraining {args.algo} with CONTINUOUS actions")
+        print(f"\n🚀 Training {args.algo} with CONTINUOUS actions")
         print(f"   Timesteps: {args.timesteps:,}")
         print(f"   Parallel envs: {args.n_envs}")
         print(f"   Curriculum learning: {'Disabled' if args.no_curriculum else 'Enabled'}")
@@ -314,5 +326,5 @@ if __name__ == "__main__":
             n_envs=args.n_envs,
             use_curriculum=not args.no_curriculum
         )
-
+    
     print("\nDone!")
