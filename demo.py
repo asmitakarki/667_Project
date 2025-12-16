@@ -1,3 +1,6 @@
+"""
+Run python demo.py to see a demo of the RobotPOVEnv environment.
+"""
 from robot_pov_env import RobotPOVEnv
 import time
 
@@ -10,7 +13,7 @@ env = RobotPOVEnv(
     map_type="city",
     render_mode="human",
     use_camera_obs=False,
-    num_obstacles=4
+    num_obstacles=6
 )
 
 obs, _ = env.reset()

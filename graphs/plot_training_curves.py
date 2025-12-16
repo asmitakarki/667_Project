@@ -25,7 +25,6 @@ def load_and_bin(algo: str):
 
     dfs = []
     for f in files:
-        # SB3 Monitor CSV has a first comment/header line; your method works:
         df = pd.read_csv(f, skiprows=1)
         dfs.append(df)
 
@@ -58,14 +57,6 @@ def main():
             binned["mean_r_smooth"],
             label=f"{algo} (binned+smoothed)"
         )
-
-        # Optional: shaded +/- 1 std (uncomment if you want)
-        # plt.fill_between(
-        #     binned["steps"],
-        #     binned["mean_r_smooth"] - binned["std_r"].fillna(0),
-        #     binned["mean_r_smooth"] + binned["std_r"].fillna(0),
-        #     alpha=0.15
-        # )
 
     plt.xlabel("Timesteps")
     plt.ylabel("Episode Reward")

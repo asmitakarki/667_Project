@@ -1,7 +1,7 @@
 """
-OPTIMIZED training - fixes for slow FPS and poor performance
+TRAINING SCRIPT for RL algorithms (PPO, SAC, TD3) with CONTINUOUS actions
+Include REAL curriculum learning and improved hyperparameters
 """
-
 import gymnasium as gym
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,6 +9,7 @@ from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback
 
 import time
 import os
@@ -17,16 +18,7 @@ import torch
 # for plotting
 import glob
 import pandas as pd
-
-from robot_pov_env2 import RobotPOVEnv, RobotPOVContinuousEnv
-
-"""
-OPTIMIZED training - CONTINUOUS actions for all algorithms (PPO, SAC, TD3)
-With improved reward shaping and hyperparameters
-"""
-
-from stable_baselines3.common.callbacks import BaseCallback
-
+from robot_pov_env import RobotPOVContinuousEnv
 
 class CurriculumCallback(BaseCallback):
     """
@@ -116,7 +108,7 @@ def plot_training_curve(log_dir, algo_name, window=50, save_path=None):
 def train_algorithm(algo_name, total_timesteps=5000000, save_dir="models", 
                     render_training=False, n_envs=4, use_curriculum=True):
     """
-    Training with parallel environments - ALL algorithms use CONTINUOUS actions
+    Training with parallel environments - ALL algorithms use continuous actions
     
     Key changes:
     - PPO now uses continuous actions (smooth control)
@@ -134,13 +126,13 @@ def train_algorithm(algo_name, total_timesteps=5000000, save_dir="models",
     initial_obstacles = 2 if use_curriculum else 6
     
     if use_curriculum:
-        print(f"📚 REAL Curriculum Learning Enabled:")
-        print(f"   0 steps      → 2 obstacles (EASY)")
-        print(f"   1M steps     → 4 obstacles (MEDIUM)")
-        print(f"   3M steps     → 6 obstacles (HARD)")
+        print(f"REAL Curriculum Learning Enabled:")
+        print(f"   0 steps      -> 2 obstacles (EASY)")
+        print(f"   1M steps     -> 4 obstacles (MEDIUM)")
+        print(f"   3M steps     -> 6 obstacles (HARD)")
         print(f"   Difficulty increases DURING training!\n")
     else:
-        print(f"🎯 Fixed difficulty: {initial_obstacles} obstacles\n")
+        print(f"Fixed difficulty: {initial_obstacles} obstacles\n")
     
     # Create directories
     os.makedirs(f"{save_dir}/{algo_name}", exist_ok=True)
@@ -170,7 +162,7 @@ def train_algorithm(algo_name, total_timesteps=5000000, save_dir="models",
             "MlpPolicy",
             env,
             learning_rate=3e-4,
-            n_steps=2048 // n_envs,  # Adjust for parallel envs
+            n_steps=2048 // n_envs,  # we used 4 n_envs
             batch_size=64,
             n_epochs=10,
             gamma=0.99,
@@ -184,7 +176,6 @@ def train_algorithm(algo_name, total_timesteps=5000000, save_dir="models",
         )
     
     elif algo_name == "SAC":
-        # SAC with IMPROVED hyperparameters for better exploration
         model = SAC(
             "MlpPolicy",
             env,
@@ -222,7 +213,7 @@ def train_algorithm(algo_name, total_timesteps=5000000, save_dir="models",
         )
     
     checkpoint_callback = CheckpointCallback(
-        save_freq=100000,  # Save every 100k steps (was 50k)
+        save_freq=100000,  # Save every 100k steps
         save_path=f"{save_dir}/{algo_name}/checkpoints/",
         name_prefix=f"{algo_name}",
         save_replay_buffer=(algo_name in ["SAC", "TD3"]),
@@ -250,7 +241,7 @@ def train_algorithm(algo_name, total_timesteps=5000000, save_dir="models",
         total_timesteps=total_timesteps,
         progress_bar=True,
         log_interval=10,
-        callback=callbacks  # Now includes curriculum callback!
+        callback=callbacks  # Now includes curriculum callback
     )
 
     training_time = time.time() - start_time
@@ -272,7 +263,6 @@ def train_algorithm(algo_name, total_timesteps=5000000, save_dir="models",
     env.close()
     
     return model, training_time
-
 
 if __name__ == "__main__":
     import argparse
@@ -304,7 +294,7 @@ if __name__ == "__main__":
         print(f"   - Better hyperparameters")
         print(f"   - Longer training by default")
         if not args.no_curriculum:
-            print(f"   - Progressive difficulty (2→4→6 obstacles)\n")
+            print(f"   - Progressive difficulty (2->4->6 obstacles)\n")
         else:
             print(f"   - Fixed 6 obstacles\n")
         
