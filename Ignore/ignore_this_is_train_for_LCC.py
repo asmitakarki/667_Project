@@ -9,7 +9,7 @@ import types
 # Create figure module with Figure class
 figure_module = types.ModuleType('figure')
 figure_module.Figure = type('Figure', (), {})
-# Create matplotlib mock
+# Create matplotlib mock to avoid import errors
 matplotlib_mock = types.ModuleType('matplotlib')
 matplotlib_mock.use = lambda x: None
 matplotlib_mock.figure = figure_module
@@ -27,15 +27,10 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.callbacks import EveryNTimesteps
 import time
 import torch
-from robot_pov_env2 import RobotPOVEnv, RobotPOVContinuousEnv
+from robot_pov_env import RobotPOVContinuousEnv
 # for plotting
 import glob
 import pandas as pd
-
-"""
-OPTIMIZED training - CONTINUOUS actions for all algorithms (PPO, SAC, TD3)
-With improved reward shaping and hyperparameters
-"""
 
 from stable_baselines3.common.callbacks import BaseCallback
 
@@ -146,13 +141,13 @@ def train_algorithm(algo_name, total_timesteps=5000000, save_dir="models",
     initial_obstacles = 2 if use_curriculum else 6
     
     if use_curriculum:
-        print(f"📚 REAL Curriculum Learning Enabled:")
+        print(f"REAL Curriculum Learning Enabled:")
         print(f"   0 steps      → 2 obstacles (EASY)")
         print(f"   1M steps     → 4 obstacles (MEDIUM)")
         print(f"   3M steps     → 6 obstacles (HARD)")
         print(f"   Difficulty increases DURING training!\n")
     else:
-        print(f"🎯 Fixed difficulty: {initial_obstacles} obstacles\n")
+        print(f"Fixed difficulty: {initial_obstacles} obstacles\n")
     
     # Create directories
     os.makedirs(f"{save_dir}/{algo_name}", exist_ok=True)
@@ -306,7 +301,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.mode == 'train':
-        print(f"\n🚀 Training {args.algo} with CONTINUOUS actions")
+        print(f"\nTraining {args.algo} with CONTINUOUS actions")
         print(f"   Timesteps: {args.timesteps:,}")
         print(f"   Parallel envs: {args.n_envs}")
         print(f"   Curriculum learning: {'Disabled' if args.no_curriculum else 'Enabled'}")
@@ -326,5 +321,5 @@ if __name__ == "__main__":
             n_envs=args.n_envs,
             use_curriculum=not args.no_curriculum
         )
-    
+
     print("\nDone!")

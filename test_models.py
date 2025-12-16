@@ -5,7 +5,7 @@ Test trained RL models and generate results for report
 import numpy as np
 import matplotlib.pyplot as plt
 from stable_baselines3 import PPO, SAC, TD3
-from robot_pov_env2 import RobotPOVEnv, RobotPOVContinuousEnv
+from robot_pov_env import RobotPOVContinuousEnv
 import time
 import os
 
@@ -23,10 +23,10 @@ def test_single_algorithm(algo_name, model_path, n_episodes=20, render=False, ve
         print(f"Testing {algo_name}")
         print("="*70 + "\n")
     
-    # Load model
+    # Load model - ALL algorithms now use continuous actions!
     if algo_name == "PPO":
         model = PPO.load(model_path)
-        EnvClass = RobotPOVEnv
+        EnvClass = RobotPOVContinuousEnv
     elif algo_name == "SAC":
         model = SAC.load(model_path)
         EnvClass = RobotPOVContinuousEnv
@@ -42,13 +42,15 @@ def test_single_algorithm(algo_name, model_path, n_episodes=20, render=False, ve
         map_type="city",
         render_mode="human" if render else None,
         use_camera_obs=False,
-        num_obstacles=4,
+        num_obstacles=6,  # CHANGED: Match training difficulty (was 4)
     )
     
     episode_rewards = []
     episode_lengths = []
     successes = []
     collisions = []
+    timeouts = []
+    steps_to_goal = []  # Track steps for successful episodes only
     
     for ep in range(n_episodes):
         obs, info = env.reset()
@@ -66,17 +68,30 @@ def test_single_algorithm(algo_name, model_path, n_episodes=20, render=False, ve
             if render:
                 time.sleep(0.01)
         
-        # Determine outcome
-        success = (done and total_reward > 50)  # Got success bonus
-        collision = (done and total_reward < -20)  # Got collision penalty
+        # Determine outcome using info dict
+        success = info.get("success", False)
+        collision = info.get("collision", False)
+        timeout = truncated and not done
         
         episode_rewards.append(total_reward)
         episode_lengths.append(step)
         successes.append(success)
         collisions.append(collision)
+        timeouts.append(timeout)
+        
+        # Track steps-to-goal only for successes
+        if success:
+            steps_to_goal.append(step)
         
         if verbose:
-            outcome = "SUCCESS" if success else ("COLLISION" if collision else "TIMEOUT")
+            if success:
+                outcome = "SUCCESS"
+            elif collision:
+                outcome = "COLLISION"
+            elif timeout:
+                outcome = "TIMEOUT"
+            else:
+                outcome = "UNKNOWN"
             print(f"Episode {ep+1:2d}: {step:3d} steps, reward={total_reward:6.1f} [{outcome}]")
     
     env.close()
@@ -89,8 +104,11 @@ def test_single_algorithm(algo_name, model_path, n_episodes=20, render=False, ve
         "std_length": float(np.std(episode_lengths)),
         "success_rate": float(np.mean(successes) * 100),  # Percentage
         "collision_rate": float(np.mean(collisions) * 100),
+        "timeout_rate": float(np.mean(timeouts) * 100),
         "min_reward": float(np.min(episode_rewards)),
         "max_reward": float(np.max(episode_rewards)),
+        "avg_steps_to_goal": float(np.mean(steps_to_goal)) if len(steps_to_goal) > 0 else 0,
+        "std_steps_to_goal": float(np.std(steps_to_goal)) if len(steps_to_goal) > 0 else 0,
     }
     
     if verbose:
@@ -99,6 +117,9 @@ def test_single_algorithm(algo_name, model_path, n_episodes=20, render=False, ve
         print(f"  Average Length:   {stats['avg_length']:6.1f} ± {stats['std_length']:.1f} steps")
         print(f"  Success Rate:     {stats['success_rate']:5.1f}%")
         print(f"  Collision Rate:   {stats['collision_rate']:5.1f}%")
+        print(f"  Timeout Rate:     {stats['timeout_rate']:5.1f}%")
+        if stats['avg_steps_to_goal'] > 0:
+            print(f"  Avg Steps-to-Goal: {stats['avg_steps_to_goal']:5.1f} ± {stats['std_steps_to_goal']:.1f} (successes only)")
         print(f"  Reward Range:     [{stats['min_reward']:.1f}, {stats['max_reward']:.1f}]")
     
     return stats
@@ -110,7 +131,7 @@ def compare_all_algorithms(n_episodes=20, model_dir="models"):
     """
     
     print("\n" + "="*70)
-    print("TESTING ALL ALGORITHMS")
+    print("TESTING ALL ALGORITHMS (All using continuous actions)")
     print("="*70)
     
     algorithms = ["PPO", "SAC", "TD3"]
@@ -135,7 +156,7 @@ def compare_all_algorithms(n_episodes=20, model_dir="models"):
     if not results:
         print("\nNo trained models found!")
         print("Train models first using:")
-        print("  python train_optimized.py --algo PPO --timesteps 200000 --n-envs 4")
+        print("  python train.py --algo PPO --timesteps 5000000 --n-envs 4")
         return
     
     # Print comparison table
@@ -156,6 +177,7 @@ def compare_all_algorithms(n_episodes=20, model_dir="models"):
     # Generate plots
     if len(results) > 0:
         generate_comparison_plots(results, algorithms)
+        plot_outcomes(results, algorithms)
     
     return results
 
@@ -168,6 +190,9 @@ def generate_comparison_plots(results, algorithms):
     print("\n" + "="*70)
     print("GENERATING PLOTS")
     print("="*70)
+    
+    # Create graphs directory if it doesn't exist
+    os.makedirs("graphs", exist_ok=True)
     
     # Filter to only algorithms with results
     algos_with_results = [a for a in algorithms if a in results]
@@ -198,6 +223,8 @@ def generate_comparison_plots(results, algorithms):
     axes[1].set_title('Goal Achievement Rate', fontsize=14, fontweight='bold')
     axes[1].set_ylim([0, 100])
     axes[1].grid(True, alpha=0.3, axis='y')
+    axes[1].axhline(y=50, color='orange', linestyle='--', linewidth=0.8, alpha=0.5, label='50% baseline')
+    axes[1].legend()
     
     # Plot 3: Episode Lengths
     avg_lengths = [results[algo]['avg_length'] for algo in algos_with_results]
@@ -210,41 +237,51 @@ def generate_comparison_plots(results, algorithms):
     axes[2].grid(True, alpha=0.3, axis='y')
     
     plt.tight_layout()
-    plt.savefig('algorithm_comparison.png', dpi=150, bbox_inches='tight')
-    print(f"✓ Saved: algorithm_comparison.png")
-    
-    # Generate individual metric plots for paper
-    fig2, ax = plt.subplots(figsize=(8, 6))
-    
-    metrics = ['avg_reward', 'success_rate', 'avg_length']
-    metric_names = ['Avg Reward', 'Success Rate (%)', 'Avg Episode Length']
+    save_path = "graphs/algorithm_comparison.png"
+    plt.savefig(save_path, dpi=200, bbox_inches="tight")
+    print(f"Saved: {save_path}")
+    plt.close()
+
+    # Generate normalized comparison plot
+    fig2, ax = plt.subplots(figsize=(10, 6))
     
     x = np.arange(len(algos_with_results))
     width = 0.25
     
-    for i, (metric, name) in enumerate(zip(metrics, metric_names)):
-        values = [results[algo][metric] for algo in algos_with_results]
-        # Normalize to 0-100 scale for comparison
-        if metric == 'avg_reward':
-            values = [(v + 50) / 1.5 for v in values]  # Rough normalization
-        elif metric == 'avg_length':
-            values = [100 - (v / 3) for v in values]  # Lower is better
-        
-        ax.bar(x + i*width, values, width, label=name, alpha=0.8)
+    # Normalize metrics to 0-100 scale
+    normalized_rewards = []
+    normalized_success = []
+    normalized_lengths = []
     
-    ax.set_ylabel('Normalized Score', fontsize=12)
-    ax.set_title('Algorithm Performance Comparison', fontsize=14, fontweight='bold')
-    ax.set_xticks(x + width)
+    for algo in algos_with_results:
+        # Reward: scale from [-100, 200] to [0, 100]
+        norm_reward = (results[algo]['avg_reward'] + 100) / 3.0
+        normalized_rewards.append(max(0, min(100, norm_reward)))
+        
+        # Success rate: already in [0, 100]
+        normalized_success.append(results[algo]['success_rate'])
+        
+        # Length: invert (lower is better), scale from [0, 400] to [100, 0]
+        norm_length = 100 - (results[algo]['avg_length'] / 4.0)
+        normalized_lengths.append(max(0, min(100, norm_length)))
+    
+    ax.bar(x - width, normalized_rewards, width, label='Avg Reward (normalized)', alpha=0.8, color='#3498db')
+    ax.bar(x, normalized_success, width, label='Success Rate (%)', alpha=0.8, color='#2ecc71')
+    ax.bar(x + width, normalized_lengths, width, label='Efficiency (inverted length)', alpha=0.8, color='#e74c3c')
+    
+    ax.set_ylabel('Score (0-100)', fontsize=12)
+    ax.set_title('Algorithm Performance Comparison (Normalized)', fontsize=14, fontweight='bold')
+    ax.set_xticks(x)
     ax.set_xticklabels(algos_with_results)
     ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
+    ax.set_ylim([0, 105])
     
     plt.tight_layout()
-    plt.savefig('normalized_comparison.png', dpi=150, bbox_inches='tight')
-    print(f"✓ Saved: normalized_comparison.png")
-    
-    plt.close('all')
-
+    save_path = 'graphs/normalized_comparison.png'
+    plt.savefig(save_path, dpi=200, bbox_inches='tight')
+    print(f"Saved: {save_path}")
+    plt.close()
 
 def watch_trained_agent(algo_name, model_path, n_episodes=5):
     """
@@ -252,7 +289,7 @@ def watch_trained_agent(algo_name, model_path, n_episodes=5):
     """
     
     print(f"\n{'='*70}")
-    print(f"WATCHING {algo_name} AGENT")
+    print(f"WATCHING {algo_name} AGENT (Continuous Actions)")
     print(f"{'='*70}\n")
     print("Close the window to continue to next episode...")
     
@@ -264,11 +301,48 @@ def watch_trained_agent(algo_name, model_path, n_episodes=5):
         verbose=True
     )
 
+def plot_outcomes(results, algorithms, save_path="graphs/outcome_rates.png"):
+    """
+    Plot and save Success / Collision / Timeout rates for each algorithm
+    """
+
+    # Create graphs directory if it doesn't exist
+    os.makedirs("graphs", exist_ok=True)
+
+    algos_with_results = [a for a in algorithms if a in results]
+    if not algos_with_results:
+        print("No outcome data to plot!")
+        return
+
+    success_rates = [results[a]["success_rate"] for a in algos_with_results]
+    collision_rates = [results[a]["collision_rate"] for a in algos_with_results]
+    timeout_rates = [results[a]["timeout_rate"] for a in algos_with_results]
+
+    x = np.arange(len(algos_with_results))
+    width = 0.25
+
+    plt.figure(figsize=(10, 6))
+
+    plt.bar(x - width, success_rates, width, label="Success", color="#239653")
+    plt.bar(x, collision_rates, width, label="Collision", color="#89261b")
+    plt.bar(x + width, timeout_rates, width, label="Timeout", color="#2a61eb")
+
+    plt.ylabel("Rate (%)", fontsize=12)
+    plt.title("Episode Outcomes by Algorithm", fontsize=14, fontweight="bold")
+    plt.xticks(x, algos_with_results)
+    plt.ylim(0, 100)
+    plt.grid(True, alpha=0.3, axis="y")
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200, bbox_inches="tight")
+    print(f"Saved: {save_path}")
+    plt.close()
 
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Test trained RL models')
+    parser = argparse.ArgumentParser(description='Test trained RL models (all use continuous actions)')
     parser.add_argument('--mode', type=str, default='compare',
                        choices=['compare', 'single', 'watch'],
                        help='compare=test all, single=test one, watch=visualize')
@@ -284,6 +358,8 @@ if __name__ == "__main__":
     
     if args.mode == 'compare':
         # Test all algorithms and generate comparison
+        print("\nTesting all algorithms (continuous actions)")
+        print("   This will test PPO, SAC, and TD3\n")
         results = compare_all_algorithms(
             n_episodes=args.episodes,
             model_dir=args.model_dir
@@ -294,7 +370,7 @@ if __name__ == "__main__":
         model_path = f"{args.model_dir}/{args.algo}/final_model"
         if not os.path.exists(f"{model_path}.zip"):
             print(f"Model not found: {model_path}.zip")
-            print(f"Train first: python train_optimized.py --algo {args.algo}")
+            print(f"Train first: python train.py --algo {args.algo} --timesteps 5000000")
         else:
             test_single_algorithm(
                 args.algo,
@@ -309,7 +385,7 @@ if __name__ == "__main__":
         model_path = f"{args.model_dir}/{args.algo}/final_model"
         if not os.path.exists(f"{model_path}.zip"):
             print(f"Model not found: {model_path}.zip")
-            print(f"Train first: python train_optimized.py --algo {args.algo}")
+            print(f"Train first: python train.py --algo {args.algo} --timesteps 5000000")
         else:
             watch_trained_agent(
                 args.algo,

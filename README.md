@@ -36,16 +36,16 @@ pip install tqdm rich
 
 ## Project Structure
 ```
-├── robot_pov_env.py         # robot environment with obstacles
+├── graphs                   # contains all the graphs created
+├── logs/                    # contains logs for training and csv files used to plot training curves and the code to plot curves
+├── models/                  # contains the final trained models
 ├── demo.py                  # visualize the map
-├── train.py                 # Training without CNN for now
+├── robot_pov_env.py         # robot environment with obstacles
 ├── test_models.py           # Compare, single, watch modes
-├── plot_training.py         # script to plot PPO, SAC, and TD3 from csv files      
-└── models/                  # Saved trained models
-├── logs/                    # contains logs for training and csv files used to plot training curves
+└──  train.py                # Training script
 ```
 
-## Quick Start
+## How to Start
 
 ### 1. Visualize Map
 ```bash
@@ -54,21 +54,21 @@ python demo.py
 
 ### 2. Train Algorithms
 ```bash
-python train2.py --algo PPO --timesteps 2000000 --n-envs 4
-python train.py --algo SAC --timesteps 2000000 --n-envs 4  
-python train.py --algo TD3 --timesteps 2000000 --n-envs 4
+python train.py --algo PPO --timesteps 5000000 --n-envs 4
+python train.py --algo SAC --timesteps 5000000 --n-envs 4  
+python train.py --algo TD3 --timesteps 5000000 --n-envs 4
 ```
 
 ### 3. Test Trained Model
 ```bash
 # Test all algorithms and generate comparison plots
-python test_models.py --mode compare --episodes 20
+python test_models.py --mode compare --episodes 200
 
 # Test single algorithm
 python test_models.py --mode single --algo PPO --episodes 20
 
 # Watch agent perform with visualization
-python test_models.py --mode watch --algo PPO --episodes 20
+python test_models.py --mode watch --algo PPO --episodes 1
 ```
 
 
@@ -81,4 +81,4 @@ python test_models.py --mode watch --algo PPO --episodes 20
 
 ### Training logs are saved in logs/ directory.
 ### Training curves are saved in graphs/.
-### Comparison plots are saved as algorithm_comparison.png.
+### Comparison plots are saved as graphs/.
