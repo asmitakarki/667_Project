@@ -54,7 +54,7 @@ python demo.py
 
 ### 2. Train Algorithms
 ```bash
-python train.py --algo PPO --timesteps 2000000 --n-envs 4
+python train2.py --algo PPO --timesteps 2000000 --n-envs 4
 python train.py --algo SAC --timesteps 2000000 --n-envs 4  
 python train.py --algo TD3 --timesteps 2000000 --n-envs 4
 ```

@@ -1,12 +1,11 @@
 """
-Test trained RL models and generate results for paper
-Separate from training for clean workflow
+Test trained RL models and generate results for report
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from stable_baselines3 import PPO, SAC, TD3
-from robot_pov_env import RobotPOVEnv, RobotPOVContinuousEnv
+from robot_pov_env2 import RobotPOVEnv, RobotPOVContinuousEnv
 import time
 import os
 

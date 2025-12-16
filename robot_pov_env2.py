@@ -2,6 +2,8 @@
 First-Person POV Camera Environment
 The PyBullet window shows what the ROBOT SEES through its camera
 Like a video game FPS view
+
+UPDATED: Improved reward shaping for better learning
 """
 import gymnasium as gym
 from gymnasium import spaces
@@ -76,7 +78,12 @@ class RobotPOVEnv(gym.Env):
                 high=np.array([grid_size, grid_size, np.pi, grid_size, grid_size], dtype=np.float32),
             )
         
-        self.max_steps = 20 # changed from 15, this gives 400 steps
+        # DISTANCE-BASED episode horizon (fair for varying start/goal distances)
+        self.base_max_steps = grid_size * 10      # baseline: 200 steps
+        self.steps_per_meter = 20                 # +20 steps per meter of distance
+        self.min_episode_steps = grid_size * 8    # min: 160 steps
+        self.max_episode_steps = grid_size * 35   # max: 700 steps
+        self.max_steps = self.base_max_steps      # will be set per-episode in reset()
         self.step_count = 0
         
         self._init_pybullet()
@@ -96,17 +103,7 @@ class RobotPOVEnv(gym.Env):
         
         self._create_ground()
         self._create_boundary_walls()
-    '''
-    def _create_ground(self):
-        """Create ground"""
-        plane_shape = p.createCollisionShape(p.GEOM_PLANE)
-        plane_visual = p.createVisualShape(
-            p.GEOM_PLANE,
-            rgbaColor=[0.4, 0.6, 0.4, 1]  # Green grass
-        )
-        plane_id = p.createMultiBody(0, plane_shape, plane_visual, [0, 0, 0])
-        p.changeDynamics(plane_id, -1, lateralFriction=0.8)
-    '''
+    
     def _create_ground(self):
         plane_id = p.loadURDF("plane.urdf")
         p.changeDynamics(plane_id, -1, lateralFriction=0.8)
@@ -115,8 +112,6 @@ class RobotPOVEnv(gym.Env):
         """Create visible boundary walls"""
         wall_h = 2.0
         w_thick = 0.3
-        # blue walls, use [0.2, 0.2, 0.8, 1] for normal walls
-
         blue = [0.2, 0.2, 0.8, 1]  # blue walls for visibility
         
         walls = [
@@ -224,15 +219,6 @@ class RobotPOVEnv(gym.Env):
                     halfExtents=[dot_half, 0.03, lane_h / 2],
                     rgbaColor=yellow,
                 )
-                # duplicate code removed
-                '''
-                p.createMultiBody(
-                    baseMass=0,
-                    baseCollisionShapeIndex=col,
-                    baseVisualShapeIndex=vis,
-                    basePosition=[x, y, z],
-                )
-                '''
                 lm_id = p.createMultiBody(
                     baseMass=0,
                     baseCollisionShapeIndex=col,
@@ -253,14 +239,6 @@ class RobotPOVEnv(gym.Env):
                     halfExtents=[0.03, dot_half, lane_h / 2],
                     rgbaColor=yellow,
                 )
-                '''
-                p.createMultiBody(
-                    baseMass=0,
-                    baseCollisionShapeIndex=col,
-                    baseVisualShapeIndex=vis,
-                    basePosition=[x, y, z],
-                )
-                '''
                 lm_id = p.createMultiBody(
                     baseMass=0,
                     baseCollisionShapeIndex=col,
@@ -352,19 +330,13 @@ class RobotPOVEnv(gym.Env):
         col_id, vis_id = self._create_cone_shape(r, h)
         
         # 2. Define two white stripes with different radii to match cone taper
-        # At height 0.1 (25% up), radius is ~r * 0.75
         stripe_low_vis = p.createVisualShape(
             p.GEOM_CYLINDER, radius=r * 0.75, length=0.05, rgbaColor=[1, 1, 1, 1]
         )
-        # At height 0.25 (62% up), radius is ~r * 0.38
         stripe_high_vis = p.createVisualShape(
             p.GEOM_CYLINDER, radius=r * 0.4, length=0.04, rgbaColor=[1, 1, 1, 1]
         )
         
-        # PyBullet cylinders are Z-axis aligned by default, but we need to make sure 
-        # they aren't rotated relative to our vertical cone.
-        # No rotation needed if using standard GEOM_CYLINDER in modern PyBullet,
-        # but we define the orientation clearly just in case.
         stripe_orn = [0, 0, 0, 1] 
 
         for _ in range(self.num_obstacles):
@@ -374,29 +346,25 @@ class RobotPOVEnv(gym.Env):
             oy = pos[1] + np.random.uniform(-1.0, 1.0)
 
             # Multi-link setup
-            # Link 0: Bottom Stripe | Link 1: Top Stripe
             link_masses = [0.01, 0.01]
             link_collision_indices = [-1, -1] 
             link_visual_indices = [stripe_low_vis, stripe_high_vis]
             
-            # Positions are relative to the base of the cone (0,0,0)
             link_positions = [[0, 0, 0.12], [0, 0, 0.26]] 
             link_orientations = [stripe_orn, stripe_orn]
             
-            # Parent indices: 0 means attached to the 'Base' (the orange cone)
             link_parent_indices = [0, 0]
             link_joint_types = [p.JOINT_FIXED, p.JOINT_FIXED]
             
-            # REQUIRED for MultiBody alignment:
             link_inertial_pos = [[0, 0, 0], [0, 0, 0]]
             link_inertial_orn = [[0, 0, 0, 1], [0, 0, 0, 1]]
             link_joint_axes = [[0, 0, 0], [0, 0, 0]]
 
             obs_id = p.createMultiBody(
-                baseMass=1.0,
+                baseMass=0,  # CHANGED: 0 mass = static/immovable!
                 baseCollisionShapeIndex=col_id,
                 baseVisualShapeIndex=vis_id,
-                basePosition=[ox, oy, 0.05], # Sit on road
+                basePosition=[ox, oy, 0.0],  # CHANGED: Place exactly on ground (was 0.05)
                 linkMasses=link_masses,
                 linkCollisionShapeIndices=link_collision_indices,
                 linkVisualShapeIndices=link_visual_indices,
@@ -409,8 +377,7 @@ class RobotPOVEnv(gym.Env):
                 linkJointAxis=link_joint_axes
             )
             
-            # increase lateral friction so they don't slide like ice
-            p.changeDynamics(obs_id, -1, lateralFriction=1.0)
+            # No dynamics changes needed for static objects
             self.obstacle_ids.append(obs_id)
 
     def _get_camera_image(self):
@@ -452,8 +419,6 @@ class RobotPOVEnv(gym.Env):
         )
 
         rgb_array = np.array(rgb, dtype=np.uint8).reshape((height, width, 4))[:, :, :3]
-
-        # convert to BGR once so OpenCV colors are correct
         bgr = cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
         return bgr
 
@@ -464,68 +429,11 @@ class RobotPOVEnv(gym.Env):
         pos, _ = p.getBasePositionAndOrientation(road_id)
         return np.array([pos[0], pos[1]])
     
-    # this reset wasn't working well, causing memory build-up over time
-    '''
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-        self.step_count = 0
-        
-        # Cleanup
-        for obj_id in [
-            self.robot_id,
-            self.goal_id,
-            *self.goal_extra_ids,
-            *self.road_tile_ids,
-            *self.building_ids,
-            *self.obstacle_ids,
-            *self.lane_marker_ids,
-        ]:
-            if obj_id is not None:
-                try:
-                    p.removeBody(obj_id)
-                except:
-                    pass
-
-        self.robot_id = None
-        self.goal_id = None
-        self.goal_extra_ids = []
-        self.road_tile_ids = []
-        self.building_ids = []
-        self.obstacle_ids = []
-        self.lane_marker_ids = []
-
-        
-        # Create map
-        self._create_city_roads()
-        self._create_obstacles()
-        
-        robot_pos = self._position_on_road()
-        goal_pos = self._position_on_road()
-
-        # Avoid infinite loop: try at most 50 times to get a far goal
-        max_tries = 50
-        min_dist = self.grid_size * 0.3
-        for _ in range(max_tries):
-            if np.linalg.norm(robot_pos - goal_pos) >= min_dist:
-                break
-            goal_pos = self._position_on_road()
-        # If we "fail", we just accept the last sampled goal_pos
-
-        self._create_robot(robot_pos)
-        self._create_goal(goal_pos)
-
-        for _ in range(30):
-            p.stepSimulation()
-
-        return self._get_obs(), {}
-    '''
-    # increases training time
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.step_count = 0
         
         # disconnect and reconnect PyBullet
-        # This clears everything cleanly without warnings
         if self.physics_client is not None:
             try:
                 p.disconnect(self.physics_client)
@@ -564,6 +472,16 @@ class RobotPOVEnv(gym.Env):
         self._create_robot(robot_pos)
         self._create_goal(goal_pos)
         
+        # DISTANCE-BASED episode horizon: longer episodes for farther goals
+        initial_dist = float(np.linalg.norm(robot_pos - goal_pos))
+        self.max_steps = int(
+            np.clip(
+                self.base_max_steps + self.steps_per_meter * initial_dist,
+                self.min_episode_steps,
+                self.max_episode_steps
+            )
+        )
+        
         # Settle physics
         for _ in range(30):
             p.stepSimulation()
@@ -574,7 +492,6 @@ class RobotPOVEnv(gym.Env):
         """Get observation"""
         if self.use_camera_obs:
             img = self._get_camera_image()
-            # Resize to smaller size for RL
             img_small = cv2.resize(img, (84, 84))
             return img_small
         else:
@@ -582,30 +499,19 @@ class RobotPOVEnv(gym.Env):
             yaw = p.getEulerFromQuaternion(orn)[2]
             gpos, _ = p.getBasePositionAndOrientation(self.goal_id)
             return np.array([pos[0], pos[1], yaw, gpos[0], gpos[1]], dtype=np.float32)
+    
     def _draw_minimap(self, size=200):
-        """
-        Return a top-down mini-map image (H x W x 3, uint8) showing:
-        - boundary box
-        - buildings
-        - obstacles
-        - robot position
-        - goal position
-        - simple path (line) from robot to goal
-        """
-        # white background
+        """Return a top-down mini-map image"""
         minimap = np.full((size, size, 3), 255, dtype=np.uint8)
 
-        # scale world coords [0, grid_size] -> [0, size]
         sx = size / float(self.grid_size)
         sy = size / float(self.grid_size)
 
         def world_to_px(x, y):
             px = int(x * sx)
-            # image origin is top-left, so flip y
             py = size - int(y * sy)
             return px, py
 
-        # draw boundary
         cv2.rectangle(
             minimap,
             world_to_px(0, 0),
@@ -614,7 +520,6 @@ class RobotPOVEnv(gym.Env):
             2,
         )
 
-        # buildings (tan / gray blocks)
         for bid in self.building_ids:
             pos, _ = p.getBasePositionAndOrientation(bid)
             x, y = pos[0], pos[1]
@@ -627,31 +532,24 @@ class RobotPOVEnv(gym.Env):
                 -1,
             )
 
-        # obstacles (orange dots)
         for oid in self.obstacle_ids:
             pos, _ = p.getBasePositionAndOrientation(oid)
             x, y = pos[0], pos[1]
             px, py = world_to_px(x, y)
-            # same color as 1.0, 0.5, 0.0 in RGB
-            # so in BGR it's (0, 140, 255) 
-            cv2.circle(minimap, (px, py), 3, (0, 140, 255), -1)  # BGR orange-ish
+            cv2.circle(minimap, (px, py), 3, (0, 140, 255), -1)
 
-        # --- Robot as a red triangle showing direction ---
         if self.robot_id is not None:
             rpos, rorn = p.getBasePositionAndOrientation(self.robot_id)
             rx, ry = rpos[0], rpos[1]
             yaw = p.getEulerFromQuaternion(rorn)[2]
 
-            # Center pixel
             rpx, rpy = world_to_px(rx, ry)
 
-            # Triangle size in world units → converted to px
             tri_world_size = 0.9
             tri_px_size = int(tri_world_size * (size / self.grid_size))
 
-            # Triangle orientation (forward + two side points)
             tip_x = rpx + tri_px_size * np.cos(yaw)
-            tip_y = rpy - tri_px_size * np.sin(yaw)   # minus because minimap y is flipped
+            tip_y = rpy - tri_px_size * np.sin(yaw)
 
             left_x = rpx + tri_px_size * 0.5 * np.cos(yaw + np.pi * 0.75)
             left_y = rpy - tri_px_size * 0.5 * np.sin(yaw + np.pi * 0.75)
@@ -665,38 +563,31 @@ class RobotPOVEnv(gym.Env):
                 [int(right_x), int(right_y)]
             ])
 
-            # red triangle
-            cv2.fillConvexPoly(minimap, pts, (0, 0, 255))   # BGR red
+            cv2.fillConvexPoly(minimap, pts, (0, 0, 255))
             cv2.polylines(minimap, [pts], True, (0, 0, 150), 2)
 
-
-        # goal (green)
         if self.goal_id is not None:
             gpos, _ = p.getBasePositionAndOrientation(self.goal_id)
             gx, gy = gpos[0], gpos[1]
             gpx, gpy = world_to_px(gx, gy)
-            cv2.circle(minimap, (gpx, gpy), 6, (0, 255, 0), -1)  # green
+            cv2.circle(minimap, (gpx, gpy), 6, (0, 255, 0), -1)
             cv2.circle(minimap, (gpx, gpy), 8, (0, 255, 0), 2)
 
-        # simple "path": straight line robot -> goal
         if self.robot_id is not None and self.goal_id is not None:
-            cv2.line(minimap, (rpx, rpy), (gpx, gpy), (255, 0, 255), 1)  # magenta
+            cv2.line(minimap, (rpx, rpy), (gpx, gpy), (255, 0, 255), 1)
 
         return minimap
 
     def render(self):
         """Show robot's camera view in window"""
         if self.render_mode == "human":
-            # now this is BGR already
             camera_img = self._get_camera_image()
-
             img_with_hud = camera_img.copy()
 
-            # HUD colors stay BGR
             dist = self._goal_dist()
             cv2.putText(img_with_hud, f"Distance to Goal: {dist:.1f}m",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                        (0, 255, 0), 2)   # green
+                        (0, 255, 0), 2)
 
             cv2.putText(img_with_hud, f"Step: {self.step_count}",
                         (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
@@ -717,7 +608,6 @@ class RobotPOVEnv(gym.Env):
                 x0 = x1 - mw
                 img_with_hud[y0:y1, x0:x1] = minimap
 
-            # no extra color conversion
             cv2.imshow(self.camera_window_name, img_with_hud)
             cv2.waitKey(1)
 
@@ -736,11 +626,13 @@ class RobotPOVEnv(gym.Env):
             vx = self.linear_speed * np.cos(yaw)
             vy = self.linear_speed * np.sin(yaw)
             wz = 0
-        elif action == 1:  # turn left
-            vx = vy = 0
+        elif action == 1:  # turn left (ARC - move while turning)
+            vx = 0.6 * self.linear_speed * np.cos(yaw)
+            vy = 0.6 * self.linear_speed * np.sin(yaw)
             wz = self.angular_speed
-        elif action == 2:  # turn right
-            vx = vy = 0
+        elif action == 2:  # turn right (ARC - move while turning)
+            vx = 0.6 * self.linear_speed * np.cos(yaw)
+            vy = 0.6 * self.linear_speed * np.sin(yaw)
             wz = -self.angular_speed
         else:  # reverse
             vx = -0.5 * self.linear_speed * np.cos(yaw)
@@ -757,13 +649,11 @@ class RobotPOVEnv(gym.Env):
         for _ in range(5):
             p.stepSimulation()
             
-            # Keep robot upright (fix camera tilt)
             pos, orn = p.getBasePositionAndOrientation(self.robot_id)
             euler = p.getEulerFromQuaternion(orn)
             new_orn = p.getQuaternionFromEuler([0, 0, euler[2]])
             p.resetBasePositionAndOrientation(self.robot_id, pos, new_orn)
 
-            
             if self.render_mode == "human":
                 time.sleep(1/240)
         
@@ -774,19 +664,9 @@ class RobotPOVEnv(gym.Env):
         progress_bonus = 1.0 if (old_dist - new_dist) > 0.01 else 0
         reward = distance_reward + time_penalty + progress_bonus
         
-        # Render
         if self.render_mode == "human":
             self.render()
         
-        '''
-        # Check collision BEFORE success!
-        if self._check_collision():
-            return self._get_obs(), reward - 20, True, False, {}
-        
-        # Then check success
-        if new_dist < 0.8:
-            return self._get_obs(), reward + 100, True, False, {}
-        '''
         obs = self._get_obs()
         collided = self._check_collision()
 
@@ -796,18 +676,9 @@ class RobotPOVEnv(gym.Env):
         if new_dist < 0.8:
             return obs, reward + 100, True, False, {"success": True, "collision": False}
 
-        # Timeout
         truncated = self.step_count >= self.max_steps
         return obs, reward, False, truncated, {"success": False, "collision": False}
     
-    #def _check_collision(self):
-    #    contacts = p.getContactPoints(self.robot_id)
-    #    for c in contacts:
-    #        if c[2] in self.building_ids or c[2] in self.obstacle_ids:
-    #            return True
-    #    return False
-
-    # FIXED: Corrected collision checking
     def _check_collision(self):
         contacts = p.getContactPoints(bodyA=self.robot_id)
         for c in contacts:
@@ -815,7 +686,6 @@ class RobotPOVEnv(gym.Env):
             bodyB = c[2]
             other = bodyB if bodyA == self.robot_id else bodyA
 
-            # count collisions with buildings/obstacles/walls (your choice)
             if other in self.building_ids or other in self.obstacle_ids or other in self.wall_ids:
                 return True
         return False
@@ -825,6 +695,10 @@ class RobotPOVEnv(gym.Env):
         gpos, _ = p.getBasePositionAndOrientation(self.goal_id)
         return np.linalg.norm([pos[0] - gpos[0], pos[1] - gpos[1]])
     
+    def set_num_obstacles(self, n: int):
+        """Set number of obstacles (for curriculum learning)"""
+        self.num_obstacles = int(n)
+    
     def close(self):
         cv2.destroyAllWindows()
         if self.physics_client is not None:
@@ -832,6 +706,10 @@ class RobotPOVEnv(gym.Env):
             self.physics_client = None
 
 class RobotPOVContinuousEnv(RobotPOVEnv):
+    """
+    CONTINUOUS action space for smooth control
+    IMPROVED reward shaping for better learning
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # overwrite action space: [steer, throttle] in [-1, 1]
@@ -840,9 +718,19 @@ class RobotPOVContinuousEnv(RobotPOVEnv):
             high=np.array([1.0, 1.0], dtype=np.float32),
             dtype=np.float32
         )
+    
     def step(self, action):
-        """FIXED step function for SAC/TD3"""
-        # clip to be safe
+        """
+        IMPROVED step function with COMPREHENSIVE reward shaping
+        
+        Key improvements:
+        - Stronger distance reward (20x instead of 15x)
+        - Larger time penalty to encourage efficiency
+        - GRADUATED collision penalty (lenient early, harsh late)
+        - Survival bonus for staying alive
+        - Larger success bonus
+        - Proximity bonus when getting close
+        """
         action = np.clip(action, self.action_space.low, self.action_space.high)
         steer = float(action[0])     # -1 left, +1 right
         throttle = float(action[1])  # -1 reverse, +1 forward
@@ -859,7 +747,7 @@ class RobotPOVContinuousEnv(RobotPOVEnv):
 
         vx = max_lin * throttle * np.cos(yaw)
         vy = max_lin * throttle * np.sin(yaw)
-        wz = max_ang * steer    # positive = turn left, negative = right
+        wz = max_ang * steer
 
         p.resetBaseVelocity(
             self.robot_id,
@@ -867,11 +755,10 @@ class RobotPOVContinuousEnv(RobotPOVEnv):
             angularVelocity=[0, 0, wz],
         )
 
-        # Reduced from 10 to 5 steps
+        
         for _ in range(5):
             p.stepSimulation()
             
-            # FIXED: Keep robot upright
             pos, orn = p.getBasePositionAndOrientation(self.robot_id)
             euler = p.getEulerFromQuaternion(orn)
             new_orn = p.getQuaternionFromEuler([0, 0, euler[2]])
@@ -880,37 +767,64 @@ class RobotPOVContinuousEnv(RobotPOVEnv):
             if self.render_mode == "human":
                 time.sleep(1/240)
 
-        # FIXED: Improved reward (same as discrete env)
+        # COMPREHENSIVE REWARD SHAPING
         new_dist = self._goal_dist()
-        distance_reward = (old_dist - new_dist) * 15.0  #  Was 5.0
-        time_penalty = -0.01  # Was -0.05
-        progress_bonus = 1.0 if (old_dist - new_dist) > 0.01 else 0
-        reward = distance_reward + time_penalty + progress_bonus
+        
+        # 1. Stronger distance reward - INCREASED from 15.0 to 20.0
+        distance_reward = (old_dist - new_dist) * 20.0
+        
+        # 2. Survival bonus - small constant reward for staying alive
+        survival_bonus = 0.05
+        
+        # 3. Progress bonus - encourage any forward movement
+        progress_bonus = 2.0 if (old_dist - new_dist) > 0.01 else 0
+        
+        # 4. Proximity bonus when getting close to goal
+        if new_dist < 3.0:
+            proximity_bonus = 5.0 / (new_dist + 0.1)
+        else:
+            proximity_bonus = 0
+        
+        # 5. Time penalty - INCREASED for distance-based horizons
+        # With longer episodes (up to 700 steps), need stronger time pressure
+        time_penalty = -0.02  # Was -0.01, now stronger
+        
+        # 6. NEW: Action penalty to discourage backward movement
+        action_penalty = 0
+        if throttle < -0.1:  # Moving backward
+            # Soft linear + harsh quadratic = gentle reverse OK, strong reverse BAD
+            action_penalty -= 0.3 * (-throttle)          # mild linear
+            action_penalty -= 1.2 * ((-throttle) ** 2)   # harsher quadratic
+        # NOTE: Removed forward bonus - was encouraging crashing into obstacles
+        
+        # Penalize excessive turning while barely moving
+        if abs(throttle) < 0.2 and abs(steer) > 0.5:
+            action_penalty -= 0.3  # Discourage spinning in place
+        
+        # NEW: Smarter standing still penalty - only punish if NOT making progress
+        delta = old_dist - new_dist  # positive = got closer
+        if abs(throttle) < 0.15 and abs(steer) < 0.15 and delta < 0.002:
+            action_penalty -= 0.15  # Smaller penalty, only when truly stuck
+        
+        # Base reward
+        reward = (distance_reward + survival_bonus + proximity_bonus + 
+                  progress_bonus + time_penalty + action_penalty)
 
         if self.render_mode == "human":
             self.render()
 
-        '''
-        # FIXED: Check collision FIRST
-        if self._check_collision():
-            return self._get_obs(), reward - 20, True, False, {}  # Was -30
-
-        # Then success
-        if new_dist < 0.8:
-            return self._get_obs(), reward + 100, True, False, {}
-        '''
         obs = self._get_obs()
         collided = self._check_collision()
 
         if collided:
-            return obs, reward - 50, True, False, {"success": False, "collision": True}
+            # GRADUATED collision penalty: lenient early, harsh later
+            training_progress = self.step_count / self.max_steps
+            collision_penalty = -20 - (80 * training_progress)  # -20 to -100
+            return obs, reward + collision_penalty, True, False, {"success": False, "collision": True}
 
         if new_dist < 0.8:
-            return obs, reward + 100, True, False, {"success": True, "collision": False}
+            # INCREASED success bonus from +100 to +200
+            return obs, reward + 200, True, False, {"success": True, "collision": False}
         
-
         truncated = self.step_count >= self.max_steps
         return obs, reward, False, truncated, {"success": False, "collision": False}
-
-
-
